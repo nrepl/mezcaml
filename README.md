@@ -68,11 +68,16 @@ Send a whole file:
 $ mezcaml --load scratch.ml
 ```
 
+For scripting there's also `--timeout SECONDS` (bounds connecting and each
+wait for a response, so a wedged server can't hang your script forever),
+`--color auto|always|never` (`always` is handy when piping into `less -R`),
+and `--version`.
+
 ## Library usage
 
 ```ocaml
 let () =
-  let conn = Mezcaml.Client.connect ~host:"127.0.0.1" ~port:7888 in
+  let conn = Mezcaml.Client.connect ~host:"127.0.0.1" ~port:7888 () in
   let _session = Mezcaml.Client.clone conn in
   let responses = Mezcaml.Client.eval conn "1 + 2" in
   List.iter

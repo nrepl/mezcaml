@@ -5,7 +5,7 @@ type t = {
   mutable counter : int;
 }
 
-let connect ~host ~port =
+let connect ?timeout ~host ~port () =
   let addr =
     match
       Unix.getaddrinfo host (string_of_int port)
@@ -15,8 +15,32 @@ let connect ~host ~port =
       | [] -> Printf.ksprintf failwith "cannot resolve host %S" host
   in
   let sock = Unix.socket (Unix.domain_of_sockaddr addr) Unix.SOCK_STREAM 0 in
-  (try Unix.connect sock addr
-   with exn -> (try Unix.close sock with Unix.Unix_error _ -> ()); raise exn);
+  let close_on_error f =
+    try f () with exn ->
+      (try Unix.close sock with Unix.Unix_error _ -> ());
+      raise exn
+  in
+  close_on_error (fun () ->
+    match timeout with
+      | Some seconds ->
+          (* SO_SNDTIMEO doesn't reliably bound connect(2), notably
+             not on macOS: use a non-blocking connect bounded by
+             select instead, then fall back to socket timeouts for
+             the actual requests. *)
+          Unix.set_nonblock sock;
+          (try Unix.connect sock addr
+           with Unix.Unix_error ((Unix.EINPROGRESS | Unix.EWOULDBLOCK), _, _) -> ());
+          let _, writable, _ = Unix.select [] [sock] [] seconds in
+          if writable = [] then
+            raise (Unix.Unix_error (Unix.ETIMEDOUT, "connect", host));
+          (match Unix.getsockopt_error sock with
+             | Some error -> raise (Unix.Unix_error (error, "connect", host))
+             | None -> ());
+          Unix.clear_nonblock sock;
+          Unix.setsockopt_float sock Unix.SO_RCVTIMEO seconds;
+          Unix.setsockopt_float sock Unix.SO_SNDTIMEO seconds
+      | None ->
+          Unix.connect sock addr);
   { ic = Unix.in_channel_of_descr sock;
     oc = Unix.out_channel_of_descr sock;
     session = None;

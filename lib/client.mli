@@ -7,9 +7,15 @@
 
 type t
 
-val connect : host:string -> port:int -> t
+val connect : ?timeout:float -> host:string -> port:int -> unit -> t
 (** Open a TCP connection to an nREPL server. Raises
-    [Unix.Unix_error] if the connection fails. *)
+    [Unix.Unix_error] if the connection fails.
+
+    [timeout], in seconds, bounds both connecting and each subsequent
+    wait for a server response (it is set as the socket's send and
+    receive timeout). Without it, a server that accepts the
+    connection but never answers blocks forever. When a read times
+    out the pending {!request} raises [Sys_blocked_io]. *)
 
 val close : t -> unit
 (** Close the connection (the socket, not the nREPL session; for the

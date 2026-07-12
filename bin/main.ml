@@ -2,6 +2,19 @@ let host = ref "127.0.0.1"
 let port = ref 0
 let expr = ref None
 let load = ref None
+let timeout = ref 0.0
+let color_mode = ref "auto"
+
+let die fmt = Printf.ksprintf (fun msg -> prerr_endline msg; exit 1) fmt
+
+let version () =
+  match Build_info.V1.version () with
+    | Some v -> Build_info.V1.Version.to_string v
+    | None -> "dev"
+
+let set_once what cell value =
+  if !cell <> None then die "%s can only be given once" what;
+  cell := Some value
 
 let args = [
   "--host", Arg.Set_string host,
@@ -10,26 +23,34 @@ let args = [
   "<port> Port to connect to (default: discovered via .nrepl-port)";
   "-p", Arg.Set_int port,
   "<port> Same as --port";
-  "-e", Arg.String (fun code -> expr := Some code),
+  "-e", Arg.String (set_once "-e" expr),
   "<code> Evaluate <code>, print the result and exit";
-  "--load", Arg.String (fun file -> load := Some file),
+  "--load", Arg.String (set_once "--load" load),
   "<file> Send <file> to the server via load-file and exit";
+  "--timeout", Arg.Set_float timeout,
+  "<seconds> Give up when connecting or waiting for a response takes longer";
+  "--color", Arg.Symbol (["auto"; "always"; "never"], (fun mode -> color_mode := mode)),
+  " When to color output (default: auto)";
+  "--version", Arg.Unit (fun () -> Printf.printf "mezcaml %s\n" (version ()); exit 0),
+  " Print version and exit";
 ]
 
 let usage = "Usage: mezcaml [options]\n\nA minimal nREPL client.\n\nOptions:"
-
-let die fmt = Printf.ksprintf (fun msg -> prerr_endline msg; exit 1) fmt
 
 (* +-----------------------------------------------------------------+
    | Presentation                                                    |
    +-----------------------------------------------------------------+ *)
 
-(* Colors are applied only when the stream is a terminal, NO_COLOR is
-   unset and TERM isn't "dumb". *)
+(* With --color auto (the default), colors are applied only when the
+   stream is a terminal, NO_COLOR is unset and TERM isn't "dumb". *)
 let want_color fd =
-  Unix.isatty fd
-  && Sys.getenv_opt "NO_COLOR" = None
-  && Sys.getenv_opt "TERM" <> Some "dumb"
+  match !color_mode with
+    | "always" -> true
+    | "never" -> false
+    | _ ->
+        Unix.isatty fd
+        && Sys.getenv_opt "NO_COLOR" = None
+        && Sys.getenv_opt "TERM" <> Some "dumb"
 
 let color_stdout = lazy (want_color Unix.stdout)
 let color_stderr = lazy (want_color Unix.stderr)
@@ -135,8 +156,12 @@ let setup_line_editor conn =
   history
 
 let repl conn =
-  Printf.printf "mezcaml, a minimal nREPL client. Ctrl-D to quit.\n";
-  Printf.printf "Connected to %s:%d (%s)\n" !host !port (server_description conn);
+  (* The banner is for interactive users; keep scripted (piped) runs
+     clean. *)
+  if Unix.isatty Unix.stdin then begin
+    Printf.printf "mezcaml %s, a minimal nREPL client. Ctrl-D to quit.\n" (version ());
+    Printf.printf "Connected to %s:%d (%s)\n" !host !port (server_description conn)
+  end;
   let history = setup_line_editor conn in
   let remember line =
     ignore (LNoise.history_add line : (unit, string) result);
@@ -168,24 +193,46 @@ let repl conn =
    | Entry point                                                     |
    +-----------------------------------------------------------------+ *)
 
+(* A timed-out read surfaces as Sys_error/Unix_error from inside the
+   channel layer; an abruptly closed connection as End_of_file. Turn
+   both into a proper error message instead of a backtrace. *)
+let guard_server_errors f =
+  try f () with
+    | End_of_file ->
+        die "the server closed the connection"
+    | Sys_blocked_io ->
+        die "timed out waiting for the server (--timeout %g)" !timeout
+    | Sys_error msg ->
+        die "lost the server (timeout or connection error): %s" msg
+    | Unix.Unix_error (error, _, _) ->
+        die "lost the server (timeout or connection error): %s"
+          (Unix.error_message error)
+
 let () =
   Arg.parse args
     (fun anon -> die "unexpected argument %S" anon)
     usage;
+  if !expr <> None && !load <> None then
+    die "-e and --load cannot be combined";
   if !port = 0 then begin
     match Mezcaml.Port_file.find () with
       | Some p -> port := p
       | None -> die "no port given and no .nrepl-port file found"
   end;
+  let timeout = if !timeout > 0.0 then Some !timeout else None in
   let conn =
-    try Mezcaml.Client.connect ~host:!host ~port:!port
+    try Mezcaml.Client.connect ?timeout ~host:!host ~port:!port ()
     with Unix.Unix_error (error, _, _) ->
       die "cannot connect to %s:%d: %s" !host !port (Unix.error_message error)
   in
-  ignore (Mezcaml.Client.clone conn : string);
+  guard_server_errors (fun () ->
+    ignore (Mezcaml.Client.clone conn : string));
   (match !expr, !load with
      | Some code, _ ->
-         let responses = Mezcaml.Client.eval conn ~f:print_response code in
+         let responses =
+           guard_server_errors (fun () ->
+             Mezcaml.Client.eval conn ~f:print_response code)
+         in
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)
      | None, Some file ->
@@ -198,11 +245,12 @@ let () =
            with Sys_error msg -> die "cannot read %s: %s" file msg
          in
          let responses =
-           Mezcaml.Client.load_file conn ~f:print_response
-             ~file_name:(Filename.basename file) contents
+           guard_server_errors (fun () ->
+             Mezcaml.Client.load_file conn ~f:print_response
+               ~file_name:(Filename.basename file) contents)
          in
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)
      | None, None ->
-         repl conn;
+         guard_server_errors (fun () -> repl conn);
          Mezcaml.Client.close conn)

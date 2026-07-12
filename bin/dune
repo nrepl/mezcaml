@@ -2,4 +2,4 @@
  (name main)
  (public_name mezcaml)
  (package mezcaml)
- (libraries mezcaml linenoise unix))
+ (libraries mezcaml linenoise unix dune-build-info))
