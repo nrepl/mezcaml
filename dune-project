@@ -19,4 +19,5 @@ completions, interrupt and close.")
  (depends
   (ocaml (>= 4.10))
   dune
-  base-unix))
+  base-unix
+  linenoise))

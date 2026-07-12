@@ -49,6 +49,12 @@ With no `-p`, mezcaml walks up from the current directory looking for the
 `.nrepl-port` file that servers conventionally write, so a plain `mezcaml`
 does the right thing from inside a project.
 
+The REPL has line editing and persistent history (via linenoise; history
+lives in `$XDG_STATE_HOME/mezcaml/history`), and Tab completion powered by
+the server's `completions` op. Evaluation results are shown in green and
+errors in red when stdout is a terminal; set `NO_COLOR` to turn that off.
+Ctrl-C cancels the current line, Ctrl-D quits.
+
 One-shot evaluation (exit code reflects success, handy for scripts):
 
 ```
@@ -93,8 +99,10 @@ By design, at least for now:
 - Synchronous, one request in flight at a time. Fine for a CLI and simple
   tooling; an editor integration would want an async layer on top.
 - No TLS, no EDN transport, only the default bencode one.
-- The CLI sends `interrupt` support in the library but doesn't wire it to
-  Ctrl-C yet.
+- Input is evaluated line by line; multi-line definitions have to go
+  through `--load` for now.
+- Ctrl-C cancels the line being edited but doesn't send the `interrupt`
+  op during a running evaluation yet.
 
 ## License
 
