@@ -1,0 +1,4 @@
+(library
+ (name mezcaml)
+ (public_name mezcaml)
+ (libraries unix))
