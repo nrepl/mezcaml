@@ -9,8 +9,8 @@ completions, interrupt and close."""
 maintainer: ["Bozhidar Batsov <bozhidar.batsov@gmail.com>"]
 authors: ["Bozhidar Batsov <bozhidar.batsov@gmail.com>"]
 license: "MIT"
-homepage: "https://github.com/bbatsov/mezcaml"
-bug-reports: "https://github.com/bbatsov/mezcaml/issues"
+homepage: "https://github.com/nrepl/mezcaml"
+bug-reports: "https://github.com/nrepl/mezcaml/issues"
 depends: [
   "ocaml" {>= "4.10"}
   "dune" {>= "3.0"}
@@ -31,4 +31,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/bbatsov/mezcaml.git"
+dev-repo: "git+https://github.com/nrepl/mezcaml.git"

@@ -3,7 +3,7 @@
 
 (generate_opam_files true)
 
-(source (github bbatsov/mezcaml))
+(source (github nrepl/mezcaml))
 (authors "Bozhidar Batsov <bozhidar.batsov@gmail.com>")
 (maintainers "Bozhidar Batsov <bozhidar.batsov@gmail.com>")
 (license MIT)
