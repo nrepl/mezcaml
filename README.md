@@ -8,9 +8,11 @@ and is spoken by a growing family of servers and editor clients
 ([CIDER](https://cider.mx), [neat](https://github.com/nrepl/neat),
 [conjure](https://github.com/Olical/conjure) and friends). mezcaml is the
 OCaml counterpart: a small client library plus a command-line tool, in the
-spirit of neat's "do the protocol, skip the magic" philosophy. It pairs
-nicely with utop's (experimental, for now) nREPL server mode, but it should
-work against any nREPL server, whatever the language behind it.
+spirit of neat's "do the protocol, skip the magic" philosophy. It works
+against any nREPL server, whatever the language on the other end - the
+Clojure reference implementation, the BEAM servers
+([dialtone](https://github.com/nrepl/nrepl-beam) for Erlang, repartee for
+Elixir), and anything else that speaks the protocol.
 
 ## Status
 
@@ -27,22 +29,39 @@ dune install
 
 ## Command-line usage
 
-Start an nREPL server somewhere. For OCaml that would be:
+Start an nREPL server somewhere. The Clojure reference server, for
+instance:
 
 ```
-utop -nrepl 7888
+clj -Sdeps '{:deps {nrepl/nrepl {:mvn/version "1.7.0"}}}' -M -m nrepl.cmdline --port 7888
 ```
 
 Then:
 
 ```
 $ mezcaml -p 7888
-mezcaml, a minimal nREPL client. Ctrl-D to quit.
-Connected to 127.0.0.1:7888 (nrepl 1.0, ocaml 5.3.0, utop 2.16.0)
-mezcaml> 1 + 2
-- : int = 3
-mezcaml> let square x = x * x
-val square : int -> int = <fun>
+mezcaml 0.1.0, a minimal nREPL client. Ctrl-D to quit.
+Connected to 127.0.0.1:7888 (clojure 1.12.5, java 21.0.5, nrepl 1.7.0)
+mezcaml> (+ 1 2)
+3
+mezcaml> (defn square [x] (* x x))
+#'user/square
+mezcaml> (square 7)
+49
+```
+
+The language on the other end makes no difference. Here's the same
+client talking to [dialtone](https://github.com/nrepl/nrepl-beam), the
+Erlang server (started with `bin/dialtone --port 7888`):
+
+```
+$ mezcaml -p 7888
+mezcaml 0.1.0, a minimal nREPL client. Ctrl-D to quit.
+Connected to 127.0.0.1:7888 (dialtone 0.1.0, erlang 29, nrepl 1.0.0)
+mezcaml> Square = fun(X) -> X * X end.
+#Fun<erl_eval.42.130099583>
+mezcaml> Square(7).
+49
 ```
 
 With no `-p`, mezcaml walks up from the current directory looking for the
@@ -58,14 +77,14 @@ Ctrl-C cancels the current line, Ctrl-D quits.
 One-shot evaluation (exit code reflects success, handy for scripts):
 
 ```
-$ mezcaml -e '21 * 2'
-- : int = 42
+$ mezcaml -e '(* 21 2)'
+42
 ```
 
 Send a whole file:
 
 ```
-$ mezcaml --load scratch.ml
+$ mezcaml --load scratch.clj
 ```
 
 For scripting there's also `--timeout SECONDS` (bounds connecting and each
@@ -79,7 +98,7 @@ and `--version`.
 let () =
   let conn = Mezcaml.Client.connect ~host:"127.0.0.1" ~port:7888 () in
   let _session = Mezcaml.Client.clone conn in
-  let responses = Mezcaml.Client.eval conn "1 + 2" in
+  let responses = Mezcaml.Client.eval conn "(+ 1 2)" in
   List.iter
     (fun msg ->
        match Mezcaml.Bencode.get_string msg "value" with
