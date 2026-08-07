@@ -132,3 +132,14 @@ let eval_error responses =
   List.exists
     (fun msg -> List.mem "eval-error" (Bencode.get_strings msg "status"))
     responses
+
+let versions responses =
+  match List.find_map (fun msg -> Bencode.get msg "versions") responses with
+    | Some (Bencode.Dict entries) ->
+        List.map
+          (fun (name, entry) ->
+             (name,
+              Option.value ~default:""
+                (Bencode.get_string entry "version-string")))
+          entries
+    | _ -> []
