@@ -148,35 +148,56 @@ let setup_line_editor conn =
   history
 
 let repl conn =
+  let versions = Mezcaml.Client.versions (Mezcaml.Client.describe conn) in
   (* The banner is for interactive users; keep scripted (piped) runs
      clean. *)
   if Unix.isatty Unix.stdin then begin
-    let versions = Mezcaml.Client.versions (Mezcaml.Client.describe conn) in
     Printf.printf "mezcaml %s, a minimal nREPL client. Ctrl-D to quit.\n" (version ());
     Printf.printf "Connected to %s:%d (%s)\n" !host !port (server_description versions)
   end;
+  let dialect = Repl_input.dialect_of_versions (List.map fst versions) in
   let history = setup_line_editor conn in
   let remember line =
-    ignore (LNoise.history_add line : (unit, string) result);
+    ignore (LNoise.history_add line : (unit, string) result)
+  in
+  (* Saved once per form rather than per line: linenoise rewrites
+     the whole file on every save, which adds up when a big form is
+     pasted in. *)
+  let save_history () =
     match history with
       | Some file ->
           ignore (LNoise.history_save ~filename:file : (unit, string) result)
       | None -> ()
   in
-  let rec loop () =
-    match LNoise.linenoise "mezcaml> " with
+  (* Keep reading continuation lines until the input amounts to a
+     whole form. Each physical line is remembered separately because
+     the history file is line-based. *)
+  let rec read_form acc =
+    let prompt = if acc = [] then "mezcaml> " else "    ...> " in
+    match LNoise.linenoise prompt with
       | exception Sys.Break ->
-          (* Ctrl-C cancels the current line, not the session. *)
+          (* Ctrl-C cancels the input being edited, not the session. *)
           print_newline ();
-          loop ()
-      | None ->
+          read_form []
+      | None -> `Eof
+      | Some "" when acc = [] -> read_form []
+      | Some line ->
+          (* Blank continuation lines aren't worth a history entry. *)
+          if line <> "" then remember line;
+          let acc = line :: acc in
+          let form = String.concat "\n" (List.rev acc) in
+          if Repl_input.complete dialect form then `Form form
+          else read_form acc
+  in
+  let rec loop () =
+    match read_form [] with
+      | `Eof ->
+          save_history ();
           print_newline ();
           ignore (Mezcaml.Client.close_session conn : Mezcaml.Bencode.t list)
-      | Some "" ->
-          loop ()
-      | Some line ->
-          remember line;
-          ignore (Mezcaml.Client.eval conn ~f:print_response line
+      | `Form form ->
+          save_history ();
+          ignore (Mezcaml.Client.eval conn ~f:print_response form
                   : Mezcaml.Bencode.t list);
           loop ()
   in

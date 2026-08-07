@@ -44,7 +44,8 @@ mezcaml 0.1.0, a minimal nREPL client. Ctrl-D to quit.
 Connected to 127.0.0.1:7888 (clojure 1.12.5, java 21.0.5, nrepl 1.7.0)
 mezcaml> (+ 1 2)
 3
-mezcaml> (defn square [x] (* x x))
+mezcaml> (defn square [x]
+    ...>   (* x x))
 #'user/square
 mezcaml> (square 7)
 49
@@ -70,9 +71,11 @@ does the right thing from inside a project.
 
 The REPL has line editing and persistent history (via linenoise; history
 lives in `$XDG_STATE_HOME/mezcaml/history`), and Tab completion powered by
-the server's `completions` op. Evaluation results are shown in green and
+the server's `completions` op. It reads whole forms, not lines: the
+`...>` prompt keeps going until brackets balance (or, on an Erlang
+server, until the closing `.`). Evaluation results are shown in green and
 errors in red when stdout is a terminal; set `NO_COLOR` to turn that off.
-Ctrl-C cancels the current line, Ctrl-D quits.
+Ctrl-C cancels the current input, Ctrl-D quits.
 
 One-shot evaluation (exit code reflects success, handy for scripts):
 
@@ -123,8 +126,10 @@ By design, at least for now:
 - Synchronous, one request in flight at a time. Fine for a CLI and simple
   tooling; an editor integration would want an async layer on top.
 - No TLS, no EDN transport, only the default bencode one.
-- Input is evaluated line by line; multi-line definitions have to go
-  through `--load` for now.
+- Whole-form reading is a heuristic: balanced brackets and strings for
+  Lisp-family servers, the terminating `.` for Erlang. Elixir's
+  `do ... end` blocks aren't recognized, so multi-line Elixir goes
+  through `--load`.
 - Ctrl-C cancels the line being edited but doesn't send the `interrupt`
   op during a running evaluation yet.
 
