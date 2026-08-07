@@ -142,16 +142,18 @@ let setup_line_editor conn =
          (try mkdir_p (Filename.dirname file) with Unix.Unix_error _ -> ());
          ignore (LNoise.history_load ~filename:file : (unit, string) result)
      | None -> ());
-  (* Tab completion, powered by the server. The server completes the
-     whole line and returns full-line candidates, so they can be
-     handed to linenoise as they come. A server hiccup must not take
-     down the line editor. *)
+  (* Tab completion: ask the server about the trailing token (see
+     Repl_input). A server hiccup must not take down the line editor. *)
   LNoise.set_completion_callback
     (fun line completions ->
-       if String.trim line <> "" then
-         match Mezcaml.Client.completions conn line with
+       let head, token = Repl_input.split_for_completion line in
+       if token <> "" then
+         match Mezcaml.Client.completions conn token with
            | candidates ->
-               List.iter (LNoise.add_completion completions) candidates
+               List.iter
+                 (fun candidate ->
+                    LNoise.add_completion completions (head ^ candidate))
+                 candidates
            | exception _ -> ());
   history
 
