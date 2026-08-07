@@ -92,22 +92,12 @@ let print_response msg =
   flush stdout;
   flush stderr
 
-let server_description conn =
-  let versions =
-    List.find_map
-      (fun msg -> Mezcaml.Bencode.get msg "versions")
-      (Mezcaml.Client.describe conn)
-  in
-  match versions with
-    | Some (Mezcaml.Bencode.Dict entries) ->
-        entries
-        |> List.filter_map
-             (fun (name, v) ->
-                match Mezcaml.Bencode.get_string v "version-string" with
-                  | Some version -> Some (name ^ " " ^ version)
-                  | None -> None)
-        |> String.concat ", "
-    | _ -> "unknown server"
+let server_description versions =
+  if versions = [] then "unknown server"
+  else
+    versions
+    |> List.map (fun (name, v) -> if v = "" then name else name ^ " " ^ v)
+    |> String.concat ", "
 
 (* +-----------------------------------------------------------------+
    | Interactive REPL                                                |
@@ -161,8 +151,9 @@ let repl conn =
   (* The banner is for interactive users; keep scripted (piped) runs
      clean. *)
   if Unix.isatty Unix.stdin then begin
+    let versions = Mezcaml.Client.versions (Mezcaml.Client.describe conn) in
     Printf.printf "mezcaml %s, a minimal nREPL client. Ctrl-D to quit.\n" (version ());
-    Printf.printf "Connected to %s:%d (%s)\n" !host !port (server_description conn)
+    Printf.printf "Connected to %s:%d (%s)\n" !host !port (server_description versions)
   end;
   let history = setup_line_editor conn in
   let remember line =
