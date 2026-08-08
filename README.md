@@ -75,7 +75,30 @@ the server's `completions` op. It reads whole forms, not lines: the
 `...>` prompt keeps going until brackets balance (or, on an Erlang
 server, until the closing `.`). Evaluation results are shown in green and
 errors in red when stdout is a terminal; set `NO_COLOR` to turn that off.
-Ctrl-C cancels the current input, Ctrl-D quits.
+
+### Key bindings
+
+The usual emacs-flavored readline bindings work:
+
+| Keys | Action |
+|---|---|
+| Ctrl-A / Ctrl-E | start / end of line |
+| Ctrl-B / Ctrl-F | move by character |
+| Alt-B / Alt-F, Ctrl-Left / Ctrl-Right | move by word |
+| Ctrl-W, Alt-Backspace | delete the word before the cursor |
+| Alt-D | delete the word after the cursor |
+| Ctrl-K | delete to the end of the line |
+| Ctrl-U | delete the whole line |
+| Ctrl-T | transpose characters |
+| Up / Down, Ctrl-P / Ctrl-N | walk the history |
+| Ctrl-R | incremental reverse history search; Ctrl-R again for older matches, Enter keeps the match, Ctrl-G puts your line back |
+| Ctrl-L | clear the screen |
+| Tab | completion, powered by the server |
+| Ctrl-C | cancel the input being edited |
+| Ctrl-D | delete the character under the cursor; on an empty line, quit |
+
+No kill ring and no undo - that's where linenoise draws the line, and
+mezcaml with it.
 
 One-shot evaluation (exit code reflects success, handy for scripts):
 
