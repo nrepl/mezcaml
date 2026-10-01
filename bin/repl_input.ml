@@ -28,7 +28,7 @@ type dialect = Lisp | Erlang | Generic
    bracket-counted either, so it falls back to Generic. *)
 let dialect_of_versions names =
   let has name = List.mem name names in
-  if has "clojure" || has "babashka" || has "basilisp" then Lisp
+  if has "clojure" || has "babashka" || has "basilisp" || has "jank" then Lisp
   else if has "elixir" then Generic
   else if has "erlang" then Erlang
   else Generic
