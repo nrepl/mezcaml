@@ -41,11 +41,18 @@ let session_reply request =
   [reply (id_of request)
      [("new-session", str "s1"); ("status", Bencode.List [str "done"])]]
 
-(* Not a message: a script can return this among its replies to make
-   the server pause for a while. *)
+(* Not messages: a script can return these among its replies to make
+   the server pause for a while, hang up (with a reset, on TCP), or
+   send something that isn't a whole message. *)
 let pause seconds =
   Bencode.Dict [("fake-server", str "pause");
                 ("seconds", str (string_of_float seconds))]
+
+let hang_up = Bencode.Dict [("fake-server", str "hang-up")]
+
+let raw bytes = Bencode.Dict [("fake-server", str "raw"); ("bytes", str bytes)]
+
+exception Hung_up
 
 (* A client that goes away first mustn't kill the test run. *)
 let () = Sys.set_signal Sys.sigpipe Sys.Signal_ignore
@@ -57,9 +64,15 @@ let serve fd script requests =
   let oc = Unix.out_channel_of_descr fd in
   let send msg =
     match Bencode.get_string msg "fake-server" with
-      | Some _ ->
+      | Some "pause" ->
           flush oc;
           Thread.delay (float_of_string (field "seconds" msg))
+      | Some "raw" -> output_string oc (field "bytes" msg)
+      | Some _ ->
+          flush oc;
+          (try Unix.setsockopt_optint fd Unix.SO_LINGER (Some 0)
+           with Unix.Unix_error _ -> ());
+          raise Hung_up
       | None ->
           let buf = Buffer.create 256 in
           Bencode.encode buf msg;
@@ -74,7 +87,7 @@ let serve fd script requests =
           flush oc;
           loop ()
   in
-  (try loop () with Sys_error _ -> ());
+  (try loop () with Sys_error _ | Hung_up -> ());
   close_out_noerr oc
 
 (* [with_server script run] runs [run] on a connection to a server

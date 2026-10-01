@@ -29,6 +29,7 @@ type t = {
   other : Bencode.t -> unit;
   pending : (string, pending) Hashtbl.t;
   mutable reading : pending list;
+  mutable deadline : float option;
   mutable session : string option;
   mutable counter : int;
 }
@@ -44,6 +45,7 @@ let of_channels ?timeout ?(other = fun _ -> ()) ic oc =
     other;
     pending = Hashtbl.create 8;
     reading = [];
+    deadline = None;
     session = None;
     counter = 0 }
 
@@ -91,11 +93,17 @@ let close conn =
 let session conn = conn.session
 
 (* Wait until the server's end can be read from (or written to), for no
-   longer than the connection's timeout, calling [poll] first and
-   every tenth of a second meanwhile. *)
+   longer than the connection's timeout, or past its deadline, calling
+   [poll] first and every tenth of a second meanwhile. *)
 let wait ?poll ~write conn =
   let until =
-    Option.map (fun seconds -> Unix.gettimeofday () +. seconds) conn.timeout
+    match
+      Option.map (fun seconds -> Unix.gettimeofday () +. seconds) conn.timeout,
+      conn.deadline
+    with
+      | Some a, Some b -> Some (Float.min a b)
+      | a, None -> a
+      | None, b -> b
   in
   let rec loop () =
     Option.iter (fun poll -> poll ()) poll;
@@ -335,8 +343,17 @@ let load_file conn ?f ?file_name contents =
 let interrupt ?interrupt_id conn =
   read_until_done conn (send_interrupt ?interrupt_id conn)
 
-let close_session conn =
-  let responses = request conn [("op", Bencode.String "close")] in
+let close_session ?timeout conn =
+  let close () = request conn [("op", Bencode.String "close")] in
+  let responses =
+    match timeout with
+      | Some seconds ->
+          (* One deadline for sending the request and every wait for
+             the reply, however much else the server sends meanwhile. *)
+          conn.deadline <- Some (Unix.gettimeofday () +. seconds);
+          Fun.protect close ~finally:(fun () -> conn.deadline <- None)
+      | None -> close ()
+  in
   conn.session <- None;
   responses
 

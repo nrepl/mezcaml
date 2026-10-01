@@ -8,6 +8,11 @@ let describe_response =
         [("clojure", Bencode.Dict [("version-string", Bencode.String "1.12.5")]);
          ("nrepl", Bencode.Dict [("major", Bencode.Int 1)])])]
 
+let encoded msg =
+  let buf = Buffer.create 64 in
+  Bencode.encode buf msg;
+  Buffer.contents buf
+
 let () =
   assert (Client.versions [describe_response]
           = [("clojure", "1.12.5"); ("nrepl", "")]);
@@ -327,5 +332,39 @@ let () =
           = [Some big; None]);
   assert (List.map (fun msg -> Bencode.get_string msg "code") requests
           = [Some big]);
+
+  (* A server that never answers close can hold the client up only
+     for as long as it's prepared to wait, even if it keeps sending
+     other things meanwhile. Waiting for anything near the
+     connection's own thirty seconds would mean it didn't give up. *)
+  case "giving up on close" (fun () ->
+    let gives_up script =
+      let outcome, _ =
+        with_server script
+          (fun conn ->
+             let started = Unix.gettimeofday () in
+             match Client.close_session ~timeout:0.3 conn with
+               | _ -> `Answered
+               | exception Sys_blocked_io ->
+                   `Gave_up (Unix.gettimeofday () -. started))
+      in
+      match outcome with
+        | `Gave_up after -> after < 25.0
+        | `Answered -> false
+    in
+    assert (gives_up (fun _ -> []));
+    (* That's one deadline for the lot, also when a single reply
+       trickles in. *)
+    assert (gives_up (fun request ->
+                let reply =
+                  Bytes.of_string (encoded (status (id_of request) ["done"]))
+                in
+                List.concat
+                  (List.init (Bytes.length reply) (fun i ->
+                       [raw (String.make 1 (Bytes.get reply i)); pause 0.5]))));
+    assert (gives_up (fun _ ->
+                List.concat
+                  (List.init 60 (fun _ ->
+                       [pause 0.5; reply "9" [("out", str "tick\n")]])))));
 
   print_endline "all client tests passed"

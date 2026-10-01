@@ -50,7 +50,35 @@ let run ?(feed = fun _ _ -> ()) args =
 let write text fd =
   ignore (Unix.write_substring fd text 0 (String.length text) : int)
 
+(* A server that answers clone and eval, and [on_close] for close. *)
+let server ~on_close request =
+  match op_of request with
+    | "clone" -> session_reply request
+    | "close" -> on_close request
+    | _ -> answer "3" request
+
 let () =
+  (* A server that never answers close holds up -e for no more than a
+     couple of seconds, and doesn't fail it. *)
+  let (outcome, out, _), _ =
+    with_tcp_server (server ~on_close:(fun _ -> []))
+      (fun port -> run ["-p"; string_of_int port; "-e"; "(+ 1 2)"])
+  in
+  assert (outcome = Unix.WEXITED 0);
+  assert (out = "3\n");
+
+  (* Nor does one that hangs up instead of answering make quitting the
+     REPL a failure. *)
+  let (outcome, out, err), requests =
+    with_tcp_server (server ~on_close:(fun _ -> [hang_up]))
+      (fun port ->
+         run ["-p"; string_of_int port]
+           ~feed:(fun _ fd -> write "(+ 1 2)\n" fd))
+  in
+  assert (outcome = Unix.WEXITED 0);
+  assert (out = "3\n\n" && err = "");
+  assert (List.map op_of requests = ["clone"; "describe"; "eval"; "close"]);
+
   (* Ctrl-C at the stdin prompt of a REPL that can't use the terminal
      (stdin a pipe, here) interrupts the evaluation, rather than send
      it the end of its input. *)

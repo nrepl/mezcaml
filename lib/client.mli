@@ -103,7 +103,11 @@ val interrupt : ?interrupt_id:string -> t -> Bencode.t list
 (** Interrupt the session's evaluation [interrupt_id] (a request id),
     or whatever it is evaluating when there's none. *)
 
-val close_session : t -> Bencode.t list
+val close_session : ?timeout:float -> t -> Bencode.t list
+(** Close the current session. With [timeout] (in seconds), give up
+    once that long has passed, sending the request included, however
+    much else the server sends meanwhile, and raise
+    [Sys_blocked_io]. *)
 
 val completions : t -> ?op:string -> ?ns:string -> string -> string list
 (** Completion candidates for a prefix, looked up in namespace [ns]
