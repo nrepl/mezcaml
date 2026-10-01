@@ -101,6 +101,10 @@ let end_line t =
   newline t t.out;
   flush_all t
 
+let banner t text =
+  write t t.out text;
+  flush_all t
+
 let ctrl_c_echoed t =
   if t.out.tty || t.err.tty then t.terminal <- After_ctrl_c
 
