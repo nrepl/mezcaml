@@ -22,16 +22,19 @@ val connect :
     their output. By default they are dropped.
 
     [timeout], in seconds, bounds both connecting and each subsequent
-    wait for a server response (it is set as the socket's send and
-    receive timeout). Without it, a server that accepts the
-    connection but never answers blocks forever. When a read times
-    out the pending {!request} raises [Sys_blocked_io]. *)
+    wait for the server, to read a response or to take a request.
+    Without it, a server that accepts the connection but never answers
+    blocks forever. When a wait times out the pending {!request}
+    raises [Sys_blocked_io]. *)
 
 val of_channels :
-  ?other:(Bencode.t -> unit) -> in_channel -> out_channel -> t
+  ?timeout:float -> ?other:(Bencode.t -> unit) -> in_channel ->
+  out_channel -> t
 (** Wrap an already open pair of channels to a server, for transports
-    other than TCP (or a fake server in tests). [other] is as for
-    {!connect}. *)
+    other than TCP (or a fake server in tests). [timeout] and [other]
+    are as for {!connect}. The client reads and writes their
+    descriptors itself, so the channels shouldn't be used for anything
+    but this. *)
 
 val close : t -> unit
 (** Close the connection (the socket, not the nREPL session; for the
@@ -58,7 +61,8 @@ val send :
     sooner or later, or {!forget} it. *)
 
 val read_until_done :
-  t -> ?f:(Bencode.t -> unit) -> string -> Bencode.t list
+  ?poll:(unit -> unit) -> t -> ?f:(Bencode.t -> unit) -> string ->
+  Bencode.t list
 (** [read_until_done conn id] reads the replies to request [id] until
     one carries a "done" status, and returns them in order. [f], if
     given, is called on each as it arrives, which is how a caller can
@@ -74,7 +78,12 @@ val read_until_done :
     by order. A "done" without an id ends the request sent last that
     still waits for one (unless it says "interrupted", which only an
     evaluation does), and other replies without an id belong to the
-    request being read. *)
+    request being read.
+
+    [poll], if given, is called before each wait for the server, and
+    every tenth of a second while it lasts: a chance to act on what a
+    signal handler noted, since the handler itself can't safely send
+    anything. *)
 
 val forget : t -> string -> unit
 (** Stop waiting for the replies to request [id]: the ones it got and
@@ -89,12 +98,29 @@ val clone : t -> string
 val describe : t -> Bencode.t list
 val eval : t -> ?f:(Bencode.t -> unit) -> string -> Bencode.t list
 val load_file : t -> ?f:(Bencode.t -> unit) -> ?file_name:string -> string -> Bencode.t list
-val interrupt : t -> Bencode.t list
+
+val interrupt : ?interrupt_id:string -> t -> Bencode.t list
+(** Interrupt the session's evaluation [interrupt_id] (a request id),
+    or whatever it is evaluating when there's none. *)
+
 val close_session : t -> Bencode.t list
 
 val completions : t -> string -> string list
 (** Completion candidates for a prefix. Servers that don't implement
     the op yield [[]]. *)
+
+(** {2 Sending without waiting}
+
+    For callers that read the replies themselves (see {!send} and
+    {!read_until_done}). While an evaluation runs, an interrupt for it
+    has to go out without waiting for a reply. Each returns the id of
+    the message sent. *)
+
+val send_eval : t -> string -> string
+val send_load_file : t -> ?file_name:string -> string -> string
+
+val send_interrupt :
+  ?on_reply:(Bencode.t -> unit) -> ?interrupt_id:string -> t -> string
 
 (** {2 Response helpers} *)
 

@@ -18,6 +18,10 @@ val read : in_channel -> t
 (** [read ic] reads one bencode value from [ic]. Raises [End_of_file]
     if the channel is exhausted and [Failure] on malformed input. *)
 
+val read_from : next:(unit -> char) -> take:(int -> string) -> t
+(** Like {!read}, from some other source of bytes: [next ()] returns
+    the next byte and [take n] the next [n]. *)
+
 (** {2 Accessors}
 
     Convenience helpers for picking fields out of response

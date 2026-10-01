@@ -84,14 +84,23 @@ let serve fd script requests =
    and the requests the server got, in order. The client's receive
    timeout (thirty seconds unless given, plenty for a slow machine)
    turns a script that never answers into a failure instead of a hung
-   test. *)
-let with_server ?(timeout = 30.0) ?other script run =
+   test. With [delay], the server waits that long before it starts
+   reading. *)
+let with_server ?(timeout = 30.0) ?(delay = 0.0) ?other script run =
   let client, server = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-  Unix.setsockopt_float client Unix.SO_RCVTIMEO timeout;
   let requests = ref [] in
-  let thread = Thread.create (fun () -> serve server script requests) () in
+  let thread =
+    Thread.create
+      (fun () ->
+         (* The signals the tests send themselves are for the client. *)
+         ignore (Thread.sigmask Unix.SIG_BLOCK [Sys.sigint; Sys.sigalrm]
+                 : int list);
+         Thread.delay delay;
+         serve server script requests)
+      ()
+  in
   let conn =
-    Client.of_channels ?other (Unix.in_channel_of_descr client)
+    Client.of_channels ~timeout ?other (Unix.in_channel_of_descr client)
       (Unix.out_channel_of_descr client)
   in
   let result =

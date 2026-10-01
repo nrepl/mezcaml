@@ -14,9 +14,18 @@ type pending = {
   mutable finished : bool;
 }
 
+(* The client does its own reading and writing on the descriptors
+   (the channels are only kept for closing), so that a wait for the
+   server can be cut short: to act on a Ctrl-C, or when time's up. *)
 type t = {
   ic : in_channel;
   oc : out_channel;
+  input : Unix.file_descr;
+  output : Unix.file_descr;
+  timeout : float option;
+  buffer : Bytes.t;
+  mutable start : int;
+  mutable stop : int;
   other : Bencode.t -> unit;
   pending : (string, pending) Hashtbl.t;
   mutable reading : pending list;
@@ -24,8 +33,18 @@ type t = {
   mutable counter : int;
 }
 
-let of_channels ?(other = fun _ -> ()) ic oc =
-  { ic; oc; other; pending = Hashtbl.create 8; reading = []; session = None;
+let of_channels ?timeout ?(other = fun _ -> ()) ic oc =
+  { ic; oc;
+    input = Unix.descr_of_in_channel ic;
+    output = Unix.descr_of_out_channel oc;
+    timeout;
+    buffer = Bytes.create 65536;
+    start = 0;
+    stop = 0;
+    other;
+    pending = Hashtbl.create 8;
+    reading = [];
+    session = None;
     counter = 0 }
 
 let connect ?timeout ?other ~host ~port () =
@@ -48,8 +67,7 @@ let connect ?timeout ?other ~host ~port () =
       | Some seconds ->
           (* SO_SNDTIMEO doesn't reliably bound connect(2), notably
              not on macOS: use a non-blocking connect bounded by
-             select instead, then fall back to socket timeouts for
-             the actual requests. *)
+             select instead, the way [wait] bounds the requests. *)
           Unix.set_nonblock sock;
           (try Unix.connect sock addr
            with Unix.Unix_error ((Unix.EINPROGRESS | Unix.EWOULDBLOCK), _, _) -> ());
@@ -59,12 +77,10 @@ let connect ?timeout ?other ~host ~port () =
           (match Unix.getsockopt_error sock with
              | Some error -> raise (Unix.Unix_error (error, "connect", host))
              | None -> ());
-          Unix.clear_nonblock sock;
-          Unix.setsockopt_float sock Unix.SO_RCVTIMEO seconds;
-          Unix.setsockopt_float sock Unix.SO_SNDTIMEO seconds
+          Unix.clear_nonblock sock
       | None ->
           Unix.connect sock addr);
-  of_channels ?other
+  of_channels ?timeout ?other
     (Unix.in_channel_of_descr sock) (Unix.out_channel_of_descr sock)
 
 let close conn =
@@ -73,6 +89,80 @@ let close conn =
   close_in_noerr conn.ic
 
 let session conn = conn.session
+
+(* Wait until the server's end can be read from (or written to), for no
+   longer than the connection's timeout, calling [poll] first and
+   every tenth of a second meanwhile. *)
+let wait ?poll ~write conn =
+  let until =
+    Option.map (fun seconds -> Unix.gettimeofday () +. seconds) conn.timeout
+  in
+  let rec loop () =
+    Option.iter (fun poll -> poll ()) poll;
+    let left = Option.map (fun until -> until -. Unix.gettimeofday ()) until in
+    (match left with
+       | Some left when left <= 0.0 -> raise Sys_blocked_io
+       | _ -> ());
+    let timeout =
+      match left, poll with
+        | None, None -> -1.0
+        | Some left, None -> left
+        | None, Some _ -> 0.1
+        | Some left, Some _ -> Float.min left 0.1
+    in
+    let reading, writing =
+      if write then ([], [conn.output]) else ([conn.input], [])
+    in
+    match Unix.select reading writing [] timeout with
+      | [], [], _ -> loop ()
+      | _ -> ()
+      | exception Unix.Unix_error (Unix.EINTR, _, _) -> loop ()
+  in
+  loop ()
+
+let rec refill ?poll conn =
+  wait ?poll ~write:false conn;
+  match Unix.read conn.input conn.buffer 0 (Bytes.length conn.buffer) with
+    | 0 -> raise End_of_file
+    | n -> conn.start <- 0; conn.stop <- n
+    | exception
+        Unix.Unix_error ((Unix.EINTR | Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
+        refill ?poll conn
+
+let read_message ?poll conn =
+  let next () =
+    if conn.start = conn.stop then refill ?poll conn;
+    let c = Bytes.get conn.buffer conn.start in
+    conn.start <- conn.start + 1;
+    c
+  in
+  let take n =
+    let text = Buffer.create n in
+    while Buffer.length text < n do
+      if conn.start = conn.stop then refill ?poll conn;
+      let count = min (n - Buffer.length text) (conn.stop - conn.start) in
+      Buffer.add_subbytes text conn.buffer conn.start count;
+      conn.start <- conn.start + count
+    done;
+    Buffer.contents text
+  in
+  Bencode.read_from ~next ~take
+
+let write conn text =
+  let rec loop offset =
+    if offset < String.length text then
+      match
+        wait ~write:true conn;
+        Unix.single_write_substring conn.output text offset
+          (String.length text - offset)
+      with
+        | written -> loop (offset + written)
+        | exception
+            Unix.Unix_error
+              ((Unix.EINTR | Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
+            loop offset
+  in
+  loop 0
 
 let has_status msg status = List.mem status (Bencode.get_strings msg "status")
 
@@ -92,8 +182,7 @@ let send ?on_reply conn fields =
   Bencode.encode buf (Bencode.Dict fields);
   Hashtbl.replace conn.pending id
     { seq = conn.counter; on_reply; queue = Queue.create (); finished = false };
-  output_string conn.oc (Buffer.contents buf);
-  flush conn.oc;
+  write conn (Buffer.contents buf);
   id
 
 (* Servers are meant to echo the id as it was sent, a string, but
@@ -155,7 +244,7 @@ and forget conn id =
    request was given up on, and while an evaluation runs, the input it
    asked for and an interrupt for it are in flight too, as is a Tab
    completion at its stdin prompt. *)
-let read_until_done conn ?(f = fun _ -> ()) id =
+let read_until_done ?poll conn ?(f = fun _ -> ()) id =
   let request =
     match Hashtbl.find_opt conn.pending id with
       | Some request -> request
@@ -176,7 +265,7 @@ let read_until_done conn ?(f = fun _ -> ()) id =
     match Queue.take_opt request.queue with
       | Some (Reply msg) -> handle acc msg
       | Some (Route msg) -> arrive acc msg
-      | None -> arrive acc (Bencode.read conn.ic)
+      | None -> arrive acc (read_message ?poll conn)
   and arrive acc msg =
     match owner ~current:id conn msg with
       | Some owner when owner = id -> handle acc msg
@@ -217,20 +306,30 @@ let clone conn =
 let describe conn =
   request conn [("op", Bencode.String "describe")]
 
-let eval conn ?f code =
-  request conn ?f [("op", Bencode.String "eval"); ("code", Bencode.String code)]
+let send_eval conn code =
+  send conn [("op", Bencode.String "eval"); ("code", Bencode.String code)]
+
+let send_load_file conn ?file_name contents =
+  send conn
+    ([("op", Bencode.String "load-file"); ("file", Bencode.String contents)]
+     @ (match file_name with
+          | Some name -> [("file-name", Bencode.String name)]
+          | None -> []))
+
+let send_interrupt ?on_reply ?interrupt_id conn =
+  send ?on_reply conn
+    (("op", Bencode.String "interrupt")
+     :: (match interrupt_id with
+           | Some id -> [("interrupt-id", Bencode.String id)]
+           | None -> []))
+
+let eval conn ?f code = read_until_done conn ?f (send_eval conn code)
 
 let load_file conn ?f ?file_name contents =
-  let fields =
-    [("op", Bencode.String "load-file"); ("file", Bencode.String contents)]
-    @ (match file_name with
-         | Some name -> [("file-name", Bencode.String name)]
-         | None -> [])
-  in
-  request conn ?f fields
+  read_until_done conn ?f (send_load_file conn ?file_name contents)
 
-let interrupt conn =
-  request conn [("op", Bencode.String "interrupt")]
+let interrupt ?interrupt_id conn =
+  read_until_done conn (send_interrupt ?interrupt_id conn)
 
 let close_session conn =
   let responses = request conn [("op", Bencode.String "close")] in
