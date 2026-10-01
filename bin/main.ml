@@ -189,10 +189,12 @@ let repl conn =
   let versions = Mezcaml.Client.versions description in
   (* The banner is for interactive users; keep scripted (piped) runs
      clean. *)
-  if Unix.isatty Unix.stdin then begin
-    Printf.printf "mezcaml %s, a minimal nREPL client. Ctrl-D to quit.\n" (version ());
-    Printf.printf "Connected to %s:%d (%s)\n" !host !port (server_description versions)
-  end;
+  if Unix.isatty Unix.stdin then
+    Output.banner (output ())
+      (Printf.sprintf
+         "mezcaml %s, a minimal nREPL client. Ctrl-D to quit.\n\
+          Connected to %s:%d (%s)\n"
+         (version ()) !host !port (server_description versions));
   let dialect = Repl_input.dialect_of_versions (List.map fst versions) in
   let history =
     setup_line_editor conn ~ops:(Mezcaml.Client.ops description)

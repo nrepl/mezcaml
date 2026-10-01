@@ -94,4 +94,20 @@ let () =
     assert (out () = "late\n");
     assert (err () = "the server can't interrupt evaluations\n"));
 
+  (* The banner is out there before linenoise draws its prompt, which
+     bypasses stdout's buffer. *)
+  let reader, writer = Unix.pipe () in
+  let output =
+    Output.create ~out:(Unix.out_channel_of_descr writer) ~out_tty:false
+      ~err_tty:false ~out_color:false ~err_color:false ()
+  in
+  Output.banner output "mezcaml, connected\n";
+  let ready, _, _ = Unix.select [reader] [] [] 0.0 in
+  assert (ready <> []);
+  let buf = Bytes.create 64 in
+  let n = Unix.read reader buf 0 64 in
+  assert (Bytes.sub_string buf 0 n = "mezcaml, connected\n");
+  Unix.close reader;
+  Unix.close writer;
+
   print_endline "all output tests passed"

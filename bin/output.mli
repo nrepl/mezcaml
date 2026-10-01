@@ -34,6 +34,11 @@ val fresh_line : t -> unit
 val end_line : t -> unit
 (** A newline on stdout. *)
 
+val banner : t -> string -> unit
+(** The REPL's greeting, on stdout. It's flushed right away: linenoise
+    writes its prompt straight to the terminal, past stdout's
+    buffer. *)
+
 val ctrl_c_echoed : t -> unit
 (** Note that the terminal echoed a ^C: what's printed next starts on
     a new line. *)
