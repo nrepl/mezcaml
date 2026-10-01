@@ -22,6 +22,15 @@ let () =
             [Bencode.Dict [("id", Bencode.String "1")]; describe_response]
           = [("clojure", "1.12.5"); ("nrepl", "")]);
 
+  (* bb sends plain strings rather than version dicts. *)
+  assert (Client.versions
+            [Bencode.Dict
+               [("versions",
+                 Bencode.Dict
+                   [("babashka", str "1.12.218");
+                    ("babashka.nrepl", str "0.0.6")])]]
+          = [("babashka", "1.12.218"); ("babashka.nrepl", "0.0.6")]);
+
   (* Missing or malformed versions yield an empty table. *)
   assert (Client.versions [] = []);
   assert (Client.versions [Bencode.Dict [("versions", Bencode.Int 3)]] = []);

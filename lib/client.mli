@@ -168,5 +168,6 @@ val completion_op : string list -> string option
 val versions : Bencode.t list -> (string * string) list
 (** The version table from {!describe} responses, as (name,
     version-string) pairs: [("clojure", "1.12.5"); ("nrepl", "1.7.0")].
-    A name whose entry carries no version-string maps to [""]. Empty
+    An entry may also be the version string itself, as bb sends it. A
+    name whose entry carries no version-string maps to [""]. Empty
     when the responses hold no versions dictionary. *)
