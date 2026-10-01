@@ -52,45 +52,13 @@ let want_color fd =
         && Sys.getenv_opt "NO_COLOR" = None
         && Sys.getenv_opt "TERM" <> Some "dumb"
 
-let color_stdout = lazy (want_color Unix.stdout)
-let color_stderr = lazy (want_color Unix.stderr)
+(* Forced only once the command line has been parsed. *)
+let output =
+  lazy
+    (Output.create ~out_color:(want_color Unix.stdout)
+       ~err_color:(want_color Unix.stderr) ())
 
-let style enabled code text =
-  if Lazy.force enabled then
-    Printf.sprintf "\027[%sm%s\027[0m" code text
-  else
-    text
-
-let value_style text = style color_stdout "32" text
-let error_style text = style color_stderr "31" text
-
-(* Some servers (utop's multi-phrase evals, for one) send values with
-   leading newlines; they only add stray blank lines on a terminal. *)
-let strip_leading_newlines s =
-  let n = String.length s in
-  let i = ref 0 in
-  while !i < n && s.[!i] = '\n' do incr i done;
-  if !i = 0 then s else String.sub s !i (n - !i)
-
-(* Print one response message the way a terminal user expects:
-   evaluation output as it was written, errors in red on stderr,
-   values in green on their own line. *)
-let print_response msg =
-  (match Mezcaml.Bencode.get_string msg "out" with
-     | Some out -> print_string out
-     | None -> ());
-  (match Mezcaml.Bencode.get_string msg "err" with
-     | Some err -> prerr_string (error_style err)
-     | None -> ());
-  (match Mezcaml.Bencode.get_string msg "value" with
-     | Some value ->
-         let value = strip_leading_newlines value in
-         print_string (value_style value);
-         if value = "" || value.[String.length value - 1] <> '\n' then
-           print_newline ()
-     | None -> ());
-  flush stdout;
-  flush stderr
+let output () = Lazy.force output
 
 let server_description versions =
   if versions = [] then "unknown server"
@@ -122,6 +90,13 @@ let history_file () =
     | Some dir -> Some (Filename.concat (Filename.concat dir "mezcaml") "history")
     | None -> None
 
+(* linenoise has the terminal in raw mode until it returns, so strays
+   that come in meanwhile (during Tab completion) wait until then. *)
+let linenoise prompt =
+  Fun.protect
+    (fun () -> LNoise.linenoise prompt)
+    ~finally:(fun () -> Output.release (output ()))
+
 let setup_line_editor conn =
   LNoise.set_multiline true;
   LNoise.catch_break true;
@@ -138,7 +113,10 @@ let setup_line_editor conn =
     (fun line completions ->
        let head, token = Repl_input.split_for_completion line in
        if token <> "" then
-         match Mezcaml.Client.completions conn token with
+         match
+           Output.hold (output ()) (fun () ->
+             Mezcaml.Client.completions conn token)
+         with
            | candidates ->
                List.iter
                  (fun candidate ->
@@ -174,7 +152,7 @@ let repl conn =
      the history file is line-based. *)
   let rec read_form acc =
     let prompt = if acc = [] then "mezcaml> " else "    ...> " in
-    match LNoise.linenoise prompt with
+    match linenoise prompt with
       | exception Sys.Break ->
           (* Ctrl-C cancels the input being edited, not the session. *)
           print_newline ();
@@ -197,7 +175,8 @@ let repl conn =
           ignore (Mezcaml.Client.close_session conn : Mezcaml.Bencode.t list)
       | `Form form ->
           save_history ();
-          ignore (Mezcaml.Client.eval conn ~f:print_response form
+          ignore (Mezcaml.Client.eval conn
+                    ~f:(Output.print_response (output ())) form
                   : Mezcaml.Bencode.t list);
           loop ()
   in
@@ -235,7 +214,9 @@ let () =
   end;
   let timeout = if !timeout > 0.0 then Some !timeout else None in
   let conn =
-    try Mezcaml.Client.connect ?timeout ~host:!host ~port:!port ()
+    try
+      Mezcaml.Client.connect ?timeout ~other:(Output.stray (output ()))
+        ~host:!host ~port:!port ()
     with Unix.Unix_error (error, _, _) ->
       die "cannot connect to %s:%d: %s" !host !port (Unix.error_message error)
   in
@@ -245,7 +226,8 @@ let () =
      | Some code, _ ->
          let responses =
            guard_server_errors (fun () ->
-             Mezcaml.Client.eval conn ~f:print_response code)
+             Mezcaml.Client.eval conn
+               ~f:(Output.print_response (output ())) code)
          in
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)
@@ -260,7 +242,8 @@ let () =
          in
          let responses =
            guard_server_errors (fun () ->
-             Mezcaml.Client.load_file conn ~f:print_response
+             Mezcaml.Client.load_file conn
+               ~f:(Output.print_response (output ()))
                ~file_name:(Filename.basename file) contents)
          in
          Mezcaml.Client.close conn;

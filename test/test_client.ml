@@ -1,4 +1,5 @@
 open Mezcaml
+open Fake_server
 
 let describe_response =
   Bencode.Dict
@@ -19,5 +20,275 @@ let () =
   (* Missing or malformed versions yield an empty table. *)
   assert (Client.versions [] = []);
   assert (Client.versions [Bencode.Dict [("versions", Bencode.Int 3)]] = []);
+
+  (* Requests carry an id and, once cloned, the session. *)
+  let _, requests =
+    with_server
+      (fun request ->
+         if op_of request = "clone" then
+           [reply (id_of request)
+              [("new-session", str "s1");
+               ("status", Bencode.List [str "done"])]]
+         else answer "3" request)
+      (fun conn ->
+         ignore (Client.clone conn : string);
+         ignore (Client.eval conn "(+ 1 2)" : Bencode.t list))
+  in
+  assert (List.map
+            (fun msg ->
+               (Bencode.get_string msg "id", Bencode.get_string msg "session"))
+            requests
+          = [(Some "1", None); (Some "2", Some "s1")]);
+
+  (* Output trailing an eval's "done" (a future printing after the
+     eval returned) neither ends nor joins the next request: it's a
+     stray. *)
+  let late = reply "1" [("out", str "late\n")] in
+  let strays = ref [] in
+  let (first, second), _ =
+    with_server ~other:(fun msg -> strays := msg :: !strays)
+      (fun request ->
+         if id_of request = "1" then answer "#future" request
+         else late :: answer "3" request)
+      (fun conn ->
+         let first = Client.eval conn "(future (println \"late\"))" in
+         (first, Client.eval conn "(+ 1 2)"))
+  in
+  assert (first
+          = [reply "1" [("value", str "#future")]; status "1" ["done"]]);
+  assert (second = [reply "2" [("value", str "3")]; status "2" ["done"]]);
+  assert (!strays = [late]);
+
+  (* Nor does a stray "done", say the reply to a completion request
+     that timed out. *)
+  let responses, _ =
+    with_server (fun request -> status "7" ["done"] :: answer "3" request)
+      (fun conn -> Client.eval conn "(+ 1 2)")
+  in
+  assert (responses = [reply "1" [("value", str "3")]; status "1" ["done"]]);
+
+  (* Ids echoed as integers still match. *)
+  let responses, _ =
+    with_server
+      (fun request ->
+         let id = Bencode.Int (int_of_string (id_of request)) in
+         [message [("id", id); ("value", str "3")];
+          message [("id", id); ("status", Bencode.List [str "done"])]])
+      (fun conn -> Client.eval conn "(+ 1 2)")
+  in
+  assert (List.length responses = 2);
+
+  (* Replies with no id at all belong to the one request waiting for
+     replies, rather than leave the client waiting forever... *)
+  let done_ = message [("status", Bencode.List [str "done"])] in
+  let responses, _ =
+    with_server (fun _ -> [message [("value", str "3")]; done_])
+      (fun conn -> Client.eval conn "(+ 1 2)")
+  in
+  assert (responses = [message [("value", str "3")]; done_]);
+
+  (* A server that leaves ids out is followed by order: its "done"
+     ends the request sent last, and the rest belongs to the one being
+     read. So the input for an evaluation... *)
+  let bare fields = message fields in
+  let bare_status statuses =
+    bare [("status", Bencode.List (List.map str statuses))]
+  in
+  let handled = ref [] in
+  let responses, _ =
+    with_server
+      (fun request ->
+         match op_of request with
+           | "eval" -> [bare_status ["need-input"]]
+           | _ ->
+               [bare_status ["done"]; bare [("value", str "\"x\"")];
+                bare_status ["done"]])
+      (fun conn ->
+         Client.eval conn "(read-line)"
+           ~f:(fun msg ->
+               if Client.has_status msg "need-input" then
+                 ignore (Client.send conn
+                           [("op", str "stdin"); ("stdin", str "x\n")]
+                           ~on_reply:(fun msg -> handled := msg :: !handled)
+                         : string)))
+  in
+  assert (responses
+          = [bare_status ["need-input"]; bare [("value", str "\"x\"")];
+             bare_status ["done"]]);
+  assert (!handled = [bare_status ["done"]]);
+
+  (* ...an interrupt for it, answered or not... *)
+  let interrupted replies =
+    let responses, _ =
+      with_server
+        (fun request ->
+           if op_of request = "eval" then [bare [("out", str "working\n")]]
+           else replies)
+        (fun conn ->
+           let sent = ref false in
+           Client.eval conn "(loop [] (recur))"
+             ~f:(fun _ ->
+                 if not !sent then begin
+                   sent := true;
+                   ignore (Client.send conn [("op", str "interrupt")]
+                             ~on_reply:ignore
+                           : string)
+                 end))
+    in
+    List.rev responses |> List.hd
+  in
+  assert (interrupted
+            [bare_status ["done"]; bare_status ["done"; "interrupted"]]
+          = bare_status ["done"; "interrupted"]);
+  assert (interrupted [bare_status ["done"; "interrupted"]]
+          = bare_status ["done"; "interrupted"]);
+
+  (* ...and a Tab completion at its stdin prompt. *)
+  let inner = ref [] in
+  let outer, _ =
+    with_server
+      (fun request ->
+         match op_of request with
+           | "eval" -> [bare_status ["need-input"]]
+           | "completions" ->
+               [bare [("completions", Bencode.List [])]; bare_status ["done"]]
+           | _ ->
+               [bare_status ["done"]; bare [("value", str "\"m\"")];
+                bare_status ["done"]])
+      (fun conn ->
+         Client.eval conn "(read-line)"
+           ~f:(fun msg ->
+               if Client.has_status msg "need-input" then begin
+                 inner := Client.request conn [("op", str "completions")];
+                 ignore (Client.send conn
+                           [("op", str "stdin"); ("stdin", str "m\n")]
+                           ~on_reply:ignore
+                         : string)
+               end))
+  in
+  assert (!inner
+          = [bare [("completions", Bencode.List [])]; bare_status ["done"]]);
+  assert (outer
+          = [bare_status ["need-input"]; bare [("value", str "\"m\"")];
+             bare_status ["done"]]);
+
+  (* Replies to another request in flight go to its handler, and once
+     it's done, whatever else turns up for it is a stray. *)
+  let handled = ref [] and strays = ref [] in
+  let responses, _ =
+    with_server ~other:(fun msg -> strays := msg :: !strays)
+      (fun request ->
+         if op_of request = "eval" then
+           [status "1" ["done"]; reply "1" [("out", str "late\n")];
+            reply "2" [("value", str "3")]; status "2" ["done"]]
+         else [])
+      (fun conn ->
+         ignore (Client.send conn [("op", str "stdin"); ("stdin", str "x")]
+                   ~on_reply:(fun msg -> handled := msg :: !handled)
+                 : string);
+         Client.eval conn "(+ 1 2)")
+  in
+  assert (responses = [reply "2" [("value", str "3")]; status "2" ["done"]]);
+  assert (!handled = [status "1" ["done"]]);
+  assert (!strays = [reply "1" [("out", str "late\n")]]);
+
+  (* A request made while another is being read (Tab completion at an
+     evaluation's stdin prompt) gets its own replies, and the outer
+     request's that come in meanwhile wait for it. *)
+  let inner = ref [] in
+  let outer, _ =
+    with_server
+      (fun request ->
+         if op_of request = "eval" then [reply "1" [("out", str "1")]]
+         else
+           [reply "1" [("out", str "2")]; status "2" ["done"];
+            reply "1" [("value", str "nil")]; status "1" ["done"]])
+      (fun conn ->
+         Client.eval conn "(do (print 1) (read-line))"
+           ~f:(fun msg ->
+               if Bencode.get_string msg "out" = Some "1" then
+                 inner := Client.request conn [("op", str "completions")]))
+  in
+  assert (!inner = [status "2" ["done"]]);
+  assert (outer
+          = [reply "1" [("out", str "1")]; reply "1" [("out", str "2")];
+             reply "1" [("value", str "nil")]; status "1" ["done"]]);
+
+  (* Whatever reaches the outer request, or nobody, while the inner
+     one is read comes out once the outer reading resumes, in the order
+     it came in. *)
+  let events = ref [] in
+  let note what msg =
+    let text = Option.value ~default:"-" (Bencode.get_string msg "out") in
+    events := (what ^ " " ^ text) :: !events
+  in
+  let _ =
+    with_server ~other:(note "stray")
+      (fun request ->
+         if op_of request = "eval" then [reply "1" [("out", str "start")]]
+         else
+           [reply "9" [("out", str "s1")]; reply "1" [("out", str "o1")];
+            reply "9" [("out", str "s2")]; status "2" ["done"];
+            status "1" ["done"]])
+      (fun conn ->
+         Client.eval conn "(read-line)"
+           ~f:(fun msg ->
+               note "eval" msg;
+               if Bencode.get_string msg "out" = Some "start" then
+                 ignore (Client.request conn [("op", str "completions")]
+                         : Bencode.t list)))
+  in
+  assert (List.rev !events
+          = ["eval start"; "stray s1"; "eval o1"; "stray s2"; "eval -"]);
+
+  (* A request whose reading fails (a timeout, or here an exception
+     from its own [f]) stops waiting: the rest of its reply, when it
+     comes, is a stray. *)
+  case "the late reply to a request whose reading failed" (fun () ->
+    let strays = ref [] in
+    let (failed, responses), _ =
+      with_server ~other:(fun msg -> strays := msg :: !strays)
+        (fun request ->
+           if op_of request = "completions" then
+             [reply (id_of request) [("out", str "thinking\n")]]
+           else status "1" ["done"] :: answer "3" request)
+        (fun conn ->
+           let id = Client.send conn [("op", str "completions")] in
+           let failed =
+             match Client.read_until_done conn id ~f:(fun _ -> raise Exit) with
+               | _ -> false
+               | exception Exit -> true
+           in
+           (failed, Client.eval conn "(+ 1 2)"))
+    in
+    assert failed;
+    assert (responses
+            = [reply "2" [("value", str "3")]; status "2" ["done"]]);
+    assert (!strays = [status "1" ["done"]]));
+
+  (* A request given up on: what it got, and what it gets later, are
+     strays. *)
+  let strays = ref [] in
+  let _ =
+    with_server ~other:(fun msg -> strays := msg :: !strays)
+      (fun request ->
+         if id_of request = "2" then status "1" ["done"] :: answer "3" request
+         else [])
+      (fun conn ->
+         let id = Client.send conn [("op", str "describe")] in
+         Client.forget conn id;
+         Client.eval conn "(+ 1 2)")
+  in
+  assert (!strays = [status "1" ["done"]]);
+
+  (* Requests and replies far bigger than a socket buffer. *)
+  let big = String.make 200_000 'x' in
+  let responses, requests =
+    with_server (answer big) (fun conn -> Client.eval conn big)
+  in
+  assert (List.map (fun msg -> Bencode.get_string msg "value") responses
+          = [Some big; None]);
+  assert (List.map (fun msg -> Bencode.get_string msg "code") requests
+          = [Some big]);
 
   print_endline "all client tests passed"

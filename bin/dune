@@ -2,9 +2,14 @@
  (name repl_input)
  (modules repl_input))
 
+(library
+ (name output)
+ (modules output)
+ (libraries mezcaml))
+
 (executable
  (name main)
  (public_name mezcaml)
  (package mezcaml)
  (modules main)
- (libraries mezcaml repl_input linenoise unix dune-build-info))
+ (libraries mezcaml repl_input output linenoise unix dune-build-info))
