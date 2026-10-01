@@ -249,12 +249,15 @@ let repl conn =
    +-----------------------------------------------------------------+ *)
 
 (* A timed-out read surfaces as Sys_error/Unix_error from inside the
-   channel layer; an abruptly closed connection as End_of_file. Turn
-   both into a proper error message instead of a backtrace. *)
+   channel layer; an abruptly closed connection as End_of_file; a
+   malformed response (or not an nREPL server at all) as Failure.
+   Turn them into a proper error message instead of a backtrace. *)
 let guard_server_errors f =
   try f () with
     | End_of_file ->
         die "the server closed the connection"
+    | Failure msg ->
+        die "unexpected response from the server: %s" msg
     | Sys_blocked_io ->
         die "timed out waiting for the server (--timeout %g)" !timeout
     | Sys_error msg ->

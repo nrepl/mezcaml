@@ -110,4 +110,20 @@ let () =
   assert (List.map op_of requests
           = ["clone"; "describe"; "eval"; "interrupt"; "close"]);
 
+  (* Something that isn't an nREPL server, or doesn't quite act like
+     one, gets an error message rather than a crash. *)
+  let fails_with script message =
+    let (outcome, _, err), _ =
+      with_tcp_server script
+        (fun port -> run ["-p"; string_of_int port; "-e"; "1"])
+    in
+    outcome = Unix.WEXITED 1 && err = message ^ "\n"
+  in
+  assert (fails_with (fun _ -> [raw "HTTP/1.1 400 Bad Request\r\n\r\n"])
+            "unexpected response from the server: \
+             Bencode.read: unexpected character 'H'");
+  assert (fails_with (fun request -> [status (id_of request) ["done"]])
+            "unexpected response from the server: \
+             nREPL server did not return a session");
+
   print_endline "all cli tests passed"
