@@ -1,11 +1,34 @@
+(* What a request has been sent while some other one was being read:
+   a reply of its own, waiting for {!read_until_done}, or, while a
+   request is read in the middle of another one's reading, anything
+   that wasn't for the inner request, to be passed on in the order it
+   came in once the outer reading resumes. *)
+type queued = Reply of Bencode.t | Route of Bencode.t
+
+(* A request still waiting for replies. [seq] orders requests by when
+   they were sent. *)
+type pending = {
+  seq : int;
+  on_reply : (Bencode.t -> unit) option;
+  queue : queued Queue.t;
+  mutable finished : bool;
+}
+
 type t = {
   ic : in_channel;
   oc : out_channel;
+  other : Bencode.t -> unit;
+  pending : (string, pending) Hashtbl.t;
+  mutable reading : pending list;
   mutable session : string option;
   mutable counter : int;
 }
 
-let connect ?timeout ~host ~port () =
+let of_channels ?(other = fun _ -> ()) ic oc =
+  { ic; oc; other; pending = Hashtbl.create 8; reading = []; session = None;
+    counter = 0 }
+
+let connect ?timeout ?other ~host ~port () =
   let addr =
     match
       Unix.getaddrinfo host (string_of_int port)
@@ -41,10 +64,8 @@ let connect ?timeout ~host ~port () =
           Unix.setsockopt_float sock Unix.SO_SNDTIMEO seconds
       | None ->
           Unix.connect sock addr);
-  { ic = Unix.in_channel_of_descr sock;
-    oc = Unix.out_channel_of_descr sock;
-    session = None;
-    counter = 0 }
+  of_channels ?other
+    (Unix.in_channel_of_descr sock) (Unix.out_channel_of_descr sock)
 
 let close conn =
   (* Both channels share the socket fd: close one, discard the other. *)
@@ -53,9 +74,11 @@ let close conn =
 
 let session conn = conn.session
 
-let is_done msg = List.mem "done" (Bencode.get_strings msg "status")
+let has_status msg status = List.mem status (Bencode.get_strings msg "status")
 
-let request conn ?(f = fun _ -> ()) fields =
+let is_done msg = has_status msg "done"
+
+let send ?on_reply conn fields =
   conn.counter <- conn.counter + 1;
   let id = string_of_int conn.counter in
   let fields = ("id", Bencode.String id) :: fields in
@@ -67,17 +90,118 @@ let request conn ?(f = fun _ -> ()) fields =
   in
   let buf = Buffer.create 256 in
   Bencode.encode buf (Bencode.Dict fields);
+  Hashtbl.replace conn.pending id
+    { seq = conn.counter; on_reply; queue = Queue.create (); finished = false };
   output_string conn.oc (Buffer.contents buf);
   flush conn.oc;
-  let rec loop acc =
-    let msg = Bencode.read conn.ic in
-    f msg;
-    if is_done msg then
-      List.rev (msg :: acc)
-    else
-      loop (msg :: acc)
+  id
+
+(* Servers are meant to echo the id as it was sent, a string, but
+   some send it back as an integer. *)
+let response_id msg =
+  match Bencode.get msg "id" with
+    | Some (Bencode.String id) -> Some id
+    | Some (Bencode.Int id) -> Some (string_of_int id)
+    | _ -> None
+
+(* The request a reply belongs to: the one it names, as long as that
+   one still waits for replies. A server that leaves ids out can only
+   be followed by order: its done ends the request sent last that's
+   still waiting (the input for an evaluation is answered before the
+   evaluation is done), except that an evaluation's interrupted done
+   is the evaluation's, and anything else is the [current] read's. *)
+let owner ?current conn msg =
+  match response_id msg with
+    | Some id -> if Hashtbl.mem conn.pending id then Some id else None
+    | None when not (is_done msg) || has_status msg "interrupted" -> current
+    | None ->
+        Hashtbl.fold
+          (fun id request last ->
+             match last with
+               | _ when request.finished -> last
+               | Some (_, seq) when seq > request.seq -> last
+               | _ -> Some (id, request.seq))
+          conn.pending None
+        |> Option.map fst
+
+(* Hand a reply to the request it belongs to, other than the one being
+   read, or to [other] when it belongs to none. *)
+let rec deliver conn owner msg =
+  match owner with
+    | Some id when Hashtbl.mem conn.pending id ->
+        let request = Hashtbl.find conn.pending id in
+        if is_done msg then request.finished <- true;
+        (match request.on_reply with
+           | Some on_reply ->
+               if is_done msg then Hashtbl.remove conn.pending id;
+               on_reply msg
+           | None -> Queue.push (Reply msg) request.queue)
+    | _ -> conn.other msg
+
+and forget conn id =
+  match Hashtbl.find_opt conn.pending id with
+    | Some request ->
+        Hashtbl.remove conn.pending id;
+        Queue.iter
+          (function
+            | Reply msg -> conn.other msg
+            | Route msg -> deliver conn (owner conn msg) msg)
+          request.queue
+    | None -> ()
+
+(* Responses are matched to their request by id rather than by
+   order: an evaluation's output can trail its "done" (a future that
+   prints after the eval returned), a reply can turn up after its
+   request was given up on, and while an evaluation runs, the input it
+   asked for and an interrupt for it are in flight too, as is a Tab
+   completion at its stdin prompt. *)
+let read_until_done conn ?(f = fun _ -> ()) id =
+  let request =
+    match Hashtbl.find_opt conn.pending id with
+      | Some request -> request
+      | None ->
+          let request =
+            { seq = conn.counter; on_reply = None; queue = Queue.create ();
+              finished = false }
+          in
+          Hashtbl.replace conn.pending id request;
+          request
   in
-  loop []
+  (* Nothing reaches the outer reading, if any, before it resumes:
+     that keeps replies in the order they came in, and nothing gets
+     printed while the inner request's caller has the terminal (a Tab
+     completion, with linenoise in raw mode). *)
+  let outer = match conn.reading with outer :: _ -> Some outer | [] -> None in
+  let rec next acc =
+    match Queue.take_opt request.queue with
+      | Some (Reply msg) -> handle acc msg
+      | Some (Route msg) -> arrive acc msg
+      | None -> arrive acc (Bencode.read conn.ic)
+  and arrive acc msg =
+    match owner ~current:id conn msg with
+      | Some owner when owner = id -> handle acc msg
+      | owner ->
+          (match outer with
+             | Some outer -> Queue.push (Route msg) outer.queue
+             | None -> deliver conn owner msg);
+          next acc
+  and handle acc msg =
+    f msg;
+    if is_done msg then List.rev (msg :: acc) else next (msg :: acc)
+  in
+  (* However the reading ends, the request is off the books, and
+     whatever it gets later (or got queued after its "done") is a
+     stray. *)
+  let finish () =
+    conn.reading <- List.tl conn.reading;
+    forget conn id
+  in
+  conn.reading <- request :: conn.reading;
+  match next [] with
+    | responses -> finish (); responses
+    | exception e -> finish (); raise e
+
+let request conn ?f fields = read_until_done conn ?f (send conn fields)
 
 let clone conn =
   let responses = request conn [("op", Bencode.String "clone")] in
