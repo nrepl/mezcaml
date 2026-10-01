@@ -68,6 +68,22 @@ let server_description versions =
     |> String.concat ", "
 
 (* +-----------------------------------------------------------------+
+   | Evaluation                                                      |
+   +-----------------------------------------------------------------+ *)
+
+(* Print an evaluation's responses as they arrive. Meanwhile Ctrl-C
+   asks the server to interrupt it instead of killing mezcaml, which
+   would leave the evaluation running and the session open. A second
+   Ctrl-C does kill mezcaml, for servers that can't interrupt. *)
+let evaluate evaluation =
+  let output = output () in
+  Evaluation.with_sigint evaluation
+    ~on_signal:(fun () -> Output.ctrl_c_echoed output)
+    (fun () ->
+       Evaluation.run evaluation ~on_response:(Output.print_response output)
+         ~report:(Output.report output))
+
+(* +-----------------------------------------------------------------+
    | Interactive REPL                                                |
    +-----------------------------------------------------------------+ *)
 
@@ -175,8 +191,7 @@ let repl conn =
           ignore (Mezcaml.Client.close_session conn : Mezcaml.Bencode.t list)
       | `Form form ->
           save_history ();
-          ignore (Mezcaml.Client.eval conn
-                    ~f:(Output.print_response (output ())) form
+          ignore (evaluate (Evaluation.eval conn form)
                   : Mezcaml.Bencode.t list);
           loop ()
   in
@@ -226,8 +241,7 @@ let () =
      | Some code, _ ->
          let responses =
            guard_server_errors (fun () ->
-             Mezcaml.Client.eval conn
-               ~f:(Output.print_response (output ())) code)
+             evaluate (Evaluation.eval conn code))
          in
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)
@@ -242,9 +256,9 @@ let () =
          in
          let responses =
            guard_server_errors (fun () ->
-             Mezcaml.Client.load_file conn
-               ~f:(Output.print_response (output ()))
-               ~file_name:(Filename.basename file) contents)
+             evaluate
+               (Evaluation.load_file conn ~file_name:(Filename.basename file)
+                  contents))
          in
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)

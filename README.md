@@ -94,11 +94,16 @@ The usual emacs-flavored readline bindings work:
 | Ctrl-R | incremental reverse history search; Ctrl-R again for older matches, Enter keeps the match, Ctrl-G puts your line back |
 | Ctrl-L | clear the screen |
 | Tab | completion, powered by the server |
-| Ctrl-C | cancel the input being edited |
+| Ctrl-C | cancel the input being edited, or interrupt a running evaluation |
 | Ctrl-D | delete the character under the cursor; on an empty line, quit |
 
 No kill ring and no undo - that's where linenoise draws the line, and
 mezcaml with it.
+
+Ctrl-C during an evaluation sends the server an `interrupt` for it
+(with `-e` and `--load` too). Not every server can interrupt one
+(Babashka and Basilisp can't), and there the evaluation simply runs
+to its end. A second Ctrl-C quits mezcaml.
 
 One-shot evaluation (exit code reflects success, handy for scripts):
 
@@ -149,12 +154,14 @@ By design, at least for now:
 - Synchronous, one request in flight at a time. Fine for a CLI and simple
   tooling; an editor integration would want an async layer on top.
 - No TLS, no EDN transport, only the default bencode one.
+- A server that leaves ids out of its replies gets followed by the
+  order they come in, which can't always be right. If it never
+  answers an interrupt, the evaluation can end up waiting for a
+  "done" it already got, until `--timeout` or a second Ctrl-C.
 - Whole-form reading is a heuristic: balanced brackets and strings for
   Lisp-family servers, the terminating `.` for Erlang. Elixir's
   `do ... end` blocks aren't recognized, so multi-line Elixir goes
   through `--load`.
-- Ctrl-C cancels the line being edited but doesn't send the `interrupt`
-  op during a running evaluation yet.
 
 ## License
 
