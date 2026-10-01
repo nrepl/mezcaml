@@ -71,6 +71,16 @@ let server_description versions =
    | Evaluation                                                      |
    +-----------------------------------------------------------------+ *)
 
+(* The namespace evaluations last reported. Completion requests send
+   it along, since some servers (jank) won't complete without one. *)
+let current_ns = ref None
+
+let on_response msg =
+  Output.print_response (output ()) msg;
+  match Mezcaml.Bencode.get_string msg "ns" with
+    | Some ns -> current_ns := Some ns
+    | None -> ()
+
 (* Print an evaluation's responses as they arrive. Meanwhile Ctrl-C
    asks the server to interrupt it instead of killing mezcaml, which
    would leave the evaluation running and the session open. A second
@@ -82,8 +92,7 @@ let evaluate ~read_input evaluation =
   Evaluation.with_sigint evaluation
     ~on_signal:(fun () -> Output.ctrl_c_echoed output)
     (fun () ->
-       Evaluation.run evaluation ~on_response:(Output.print_response output)
-         ~report:(Output.report output)
+       Evaluation.run evaluation ~on_response ~report:(Output.report output)
          ~read_input:(fun () -> read_input evaluation))
 
 (* With -e and --load the evaluation reads mezcaml's own stdin. *)
@@ -134,7 +143,7 @@ let prompt_for_input evaluation =
     | None -> Some ""
     | exception Sys.Break -> Evaluation.press_ctrl_c evaluation; None
 
-let setup_line_editor conn =
+let setup_line_editor conn ~ops =
   LNoise.set_multiline true;
   LNoise.catch_break true;
   ignore (LNoise.history_set ~max_length:1000 : (unit, string) result);
@@ -145,14 +154,16 @@ let setup_line_editor conn =
          ignore (LNoise.history_load ~filename:file : (unit, string) result)
      | None -> ());
   (* Tab completion: ask the server about the trailing token (see
-     Repl_input). A server hiccup must not take down the line editor. *)
+     Repl_input), with whichever completion op it has. A server hiccup
+     must not take down the line editor. *)
+  let op = Mezcaml.Client.completion_op ops in
   LNoise.set_completion_callback
     (fun line completions ->
        let head, token = Repl_input.split_for_completion line in
-       if token <> "" then
+       if token <> "" && op <> None then
          match
            Output.hold (output ()) (fun () ->
-             Mezcaml.Client.completions conn token)
+             Mezcaml.Client.completions conn ?op ?ns:!current_ns token)
          with
            | candidates ->
                List.iter
@@ -163,7 +174,8 @@ let setup_line_editor conn =
   history
 
 let repl conn =
-  let versions = Mezcaml.Client.versions (Mezcaml.Client.describe conn) in
+  let description = Mezcaml.Client.describe conn in
+  let versions = Mezcaml.Client.versions description in
   (* The banner is for interactive users; keep scripted (piped) runs
      clean. *)
   if Unix.isatty Unix.stdin then begin
@@ -171,7 +183,9 @@ let repl conn =
     Printf.printf "Connected to %s:%d (%s)\n" !host !port (server_description versions)
   end;
   let dialect = Repl_input.dialect_of_versions (List.map fst versions) in
-  let history = setup_line_editor conn in
+  let history =
+    setup_line_editor conn ~ops:(Mezcaml.Client.ops description)
+  in
   let remember line =
     ignore (LNoise.history_add line : (unit, string) result)
   in

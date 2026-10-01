@@ -71,7 +71,8 @@ does the right thing from inside a project.
 
 The REPL has line editing and persistent history (via linenoise; history
 lives in `$XDG_STATE_HOME/mezcaml/history`), and Tab completion powered by
-the server's `completions` op. It reads whole forms, not lines: the
+the server's `completions` op (or `complete`, for servers that only
+have that one). It reads whole forms, not lines: the
 `...>` prompt keeps going until brackets balance (or, on an Erlang
 server, until the closing `.`). Evaluation results are shown in green and
 errors in red when stdout is a terminal; set `NO_COLOR` to turn that off.
@@ -170,6 +171,9 @@ By design, at least for now:
   Lisp-family servers, the terminating `.` for Erlang. Elixir's
   `do ... end` blocks aren't recognized, so multi-line Elixir goes
   through `--load`.
+- Tab completion on jank only kicks in after the first evaluation.
+  jank wants the current namespace with every completion request, and
+  mezcaml learns it from evaluation results.
 
 ## License
 

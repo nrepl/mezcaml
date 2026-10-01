@@ -340,10 +340,13 @@ let close_session conn =
   conn.session <- None;
   responses
 
-let completions conn prefix =
+let completions conn ?(op = "completions") ?ns prefix =
   let responses =
     request conn
-      [("op", Bencode.String "completions"); ("prefix", Bencode.String prefix)]
+      ([("op", Bencode.String op); ("prefix", Bencode.String prefix)]
+       @ (match ns with
+            | Some ns -> [("ns", Bencode.String ns)]
+            | None -> []))
   in
   List.concat_map
     (fun msg ->
@@ -359,6 +362,19 @@ let eval_error responses =
   List.exists
     (fun msg -> List.mem "eval-error" (Bencode.get_strings msg "status"))
     responses
+
+let ops responses =
+  match List.find_map (fun msg -> Bencode.get msg "ops") responses with
+    | Some (Bencode.Dict entries) -> List.map fst entries
+    | Some (Bencode.List names) ->
+        List.filter_map (function Bencode.String name -> Some name | _ -> None)
+          names
+    | _ -> []
+
+let completion_op ops =
+  if ops = [] || List.mem "completions" ops then Some "completions"
+  else if List.mem "complete" ops then Some "complete"
+  else None
 
 let versions responses =
   match List.find_map (fun msg -> Bencode.get msg "versions") responses with
