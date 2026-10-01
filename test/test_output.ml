@@ -94,6 +94,22 @@ let () =
     assert (out () = "late\n");
     assert (err () = "the server can't interrupt evaluations\n"));
 
+  (* The prompt goes on a line of its own, so that linenoise, which
+     draws it from column 0, doesn't wipe an error message that didn't
+     end its line. Only a stream that goes to the terminal gets the
+     newline. *)
+  with_output ~out_tty:true ~err_tty:true (fun output out err ->
+    Output.print_output output
+      (err_text "exception error: undefined function foo:bar/0");
+    Output.fresh_line output;
+    Output.fresh_line output;
+    assert (out () = "");
+    assert (err () = "exception error: undefined function foo:bar/0\n"));
+  with_output ~err_tty:true (fun output out err ->
+    Output.print_output output (out_text "x");
+    Output.fresh_line output;
+    assert (out () = "x" && err () = ""));
+
   (* The banner is out there before linenoise draws its prompt, which
      bypasses stdout's buffer. *)
   let reader, writer = Unix.pipe () in

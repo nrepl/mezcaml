@@ -215,6 +215,7 @@ let repl conn =
      whole form. Each physical line is remembered separately because
      the history file is line-based. *)
   let rec read_form acc =
+    Output.fresh_line (output ());
     let prompt = if acc = [] then "mezcaml> " else "    ...> " in
     match linenoise prompt with
       | exception Sys.Break ->
