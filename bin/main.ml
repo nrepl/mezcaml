@@ -100,6 +100,17 @@ let forward_stdin =
   let read = Evaluation.input_reader Unix.stdin in
   fun _ -> read ()
 
+(* nREPL and bb keep a session around after its client disconnects,
+   so mezcaml closes its own before it goes. That's housekeeping: it
+   mustn't hang on a server that never answers, and a server that
+   hangs up instead of answering doesn't make the run a failure. *)
+let close_session conn =
+  try
+    ignore (Mezcaml.Client.close_session ~timeout:2.0 conn
+            : Mezcaml.Bencode.t list)
+  with End_of_file | Sys_blocked_io | Sys_error _ | Unix.Unix_error _
+     | Failure _ -> ()
+
 (* +-----------------------------------------------------------------+
    | Interactive REPL                                                |
    +-----------------------------------------------------------------+ *)
@@ -223,7 +234,7 @@ let repl conn =
       | `Eof ->
           save_history ();
           print_newline ();
-          ignore (Mezcaml.Client.close_session conn : Mezcaml.Bencode.t list)
+          close_session conn
       | `Form form ->
           save_history ();
           ignore (evaluate ~read_input:prompt_for_input
@@ -279,6 +290,7 @@ let () =
            guard_server_errors (fun () ->
              evaluate ~read_input:forward_stdin (Evaluation.eval conn code))
          in
+         close_session conn;
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)
      | None, Some file ->
@@ -296,6 +308,7 @@ let () =
                (Evaluation.load_file conn ~file_name:(Filename.basename file)
                   contents))
          in
+         close_session conn;
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)
      | None, None ->
