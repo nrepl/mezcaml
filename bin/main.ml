@@ -217,7 +217,7 @@ let repl conn =
     match linenoise prompt with
       | exception Sys.Break ->
           (* Ctrl-C cancels the input being edited, not the session. *)
-          print_newline ();
+          Output.end_line (output ());
           read_form []
       | None -> `Eof
       | Some "" when acc = [] -> read_form []
@@ -233,7 +233,7 @@ let repl conn =
     match read_form [] with
       | `Eof ->
           save_history ();
-          print_newline ();
+          Output.end_line (output ());
           close_session conn
       | `Form form ->
           save_history ();
@@ -267,6 +267,10 @@ let guard_server_errors f =
           (Unix.error_message error)
 
 let () =
+  (* A write to a server that has gone away should fail with EPIPE,
+     which the guards report, rather than kill mezcaml without a
+     word. *)
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   Arg.parse args
     (fun anon -> die "unexpected argument %S" anon)
     usage;

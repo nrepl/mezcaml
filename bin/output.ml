@@ -46,8 +46,27 @@ let create ?(out = stdout) ?(err = stderr) ?out_tty ?err_tty ~out_color
 let style enabled code text =
   if enabled then Printf.sprintf "\027[%sm%s\027[0m" code text else text
 
+(* mezcaml ignores SIGPIPE, so that a server going away is an error it
+   can report. A stdout going away (mezcaml -e ... | head) still ends
+   it the way SIGPIPE always did, and any other trouble writing it
+   (a full disk) is an error too. A stderr in trouble is let go: there
+   would be nowhere to say so. *)
+let guarded t stream f =
+  try f () with
+    | Sys_error message when stream == t.out ->
+        if message = Unix.error_message Unix.EPIPE then begin
+          Sys.set_signal Sys.sigpipe Sys.Signal_default;
+          Unix.kill (Unix.getpid ()) Sys.sigpipe
+        end
+        else begin
+          (try prerr_endline ("cannot write the output: " ^ message)
+           with Sys_error _ -> ());
+          exit 1
+        end
+    | Sys_error _ -> ()
+
 let newline t stream =
-  output_char stream.channel '\n';
+  guarded t stream (fun () -> output_char stream.channel '\n');
   stream.at_line_start <- true;
   if stream.tty then t.terminal <- Line_start
 
@@ -59,7 +78,8 @@ let write t stream ?(color = "") text =
     let colored =
       color <> "" && (if stream == t.out then t.out_color else t.err_color)
     in
-    output_string stream.channel (style colored color text);
+    guarded t stream (fun () ->
+      output_string stream.channel (style colored color text));
     let ends_line = text.[String.length text - 1] = '\n' in
     stream.at_line_start <- ends_line;
     if stream.tty then
@@ -67,14 +87,18 @@ let write t stream ?(color = "") text =
   end
 
 let flush_all t =
-  flush t.out.channel;
-  flush t.err.channel
+  guarded t t.out (fun () -> flush t.out.channel);
+  guarded t t.err (fun () -> flush t.err.channel)
 
 let fresh_line t =
   (match t.terminal with
      | Line_start -> ()
      | Mid_line stream -> newline t stream
      | After_ctrl_c -> newline t (if t.err.tty then t.err else t.out));
+  flush_all t
+
+let end_line t =
+  newline t t.out;
   flush_all t
 
 let ctrl_c_echoed t =
