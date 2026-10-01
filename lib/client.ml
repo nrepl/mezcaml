@@ -375,10 +375,52 @@ let completions conn ?(op = "completions") ?ns prefix =
          | _ -> [])
     responses
 
-let eval_error responses =
-  List.exists
-    (fun msg -> List.mem "eval-error" (Bencode.get_strings msg "status"))
-    responses
+(* The statuses that mark a failed request, the more specific ones
+   first, with what to tell the user when the server doesn't explain
+   the failure itself. Not every server sends eval-error for a failed
+   evaluation (nbb, let-go and shadow-cljs send just ex), so an ex
+   counts as a failure too. *)
+let failures =
+  [("namespace-not-found", fun _ -> "namespace not found");
+   ("unknown-op", Printf.sprintf "the server doesn't support %s");
+   ("unknown-session", fun _ -> "the server doesn't know the session");
+   ("interrupted", fun _ -> "evaluation interrupted");
+   ("eval-error", fun _ -> "evaluation failed");
+   ("error", fun _ -> "the request failed")]
+
+let failure_statuses = List.map fst failures
+
+let failure msg =
+  List.find_opt (fun (status, _) -> has_status msg status) failures
+
+let failed msg = Bencode.get msg "ex" <> None || failure msg <> None
+
+let eval_error responses = List.exists failed responses
+
+(* The server's own err explains a failure when it comes with it or
+   right next to it (nREPL sends it just before, some servers just
+   after). An err further away is something else the evaluation
+   printed, a warning say. *)
+let failure_message ?(op = "the request") responses =
+  let rec find previous = function
+    | [] -> None
+    | msg :: rest when failed msg -> Some (previous, msg, rest)
+    | msg :: rest -> find (Some msg) rest
+  in
+  match find None responses with
+    | None -> None
+    | Some (previous, msg, rest) ->
+        let around =
+          (msg :: Option.to_list previous)
+          @ (match rest with next :: _ -> [next] | [] -> [])
+        in
+        if List.exists (fun msg -> Bencode.get msg "err" <> None) around then
+          None
+        else
+          match Bencode.get_string msg "ex", failure msg with
+            | Some ex, _ -> Some ex
+            | None, Some (_, message) -> Some (message op)
+            | None, None -> None
 
 let ops responses =
   match List.find_map (fun msg -> Bencode.get msg "ops") responses with

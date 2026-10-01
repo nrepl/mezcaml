@@ -2,6 +2,7 @@ open Mezcaml
 
 type t = {
   conn : Client.t;
+  op : string;
   send : unit -> string;
   mutable id : string option;
   mutable finished : bool;
@@ -13,14 +14,16 @@ type t = {
   mutable report : string -> unit;
 }
 
-let create conn send =
-  { conn; send; id = None; finished = false; interrupt = `No;
+let create conn op send =
+  { conn; op; send; id = None; finished = false; interrupt = `No;
     signalled = false; inputs = []; report = ignore }
 
-let eval conn code = create conn (fun () -> Client.send_eval conn code)
+let eval conn code =
+  create conn "eval" (fun () -> Client.send_eval conn code)
 
 let load_file conn ~file_name contents =
-  create conn (fun () -> Client.send_load_file conn ~file_name contents)
+  create conn "load-file" (fun () ->
+    Client.send_load_file conn ~file_name contents)
 
 let interrupt_reply t msg =
   let failures =
@@ -96,21 +99,24 @@ let run t ~on_response ~report ~read_input =
   if t.interrupt = `Requested then send_interrupt t id;
   let f msg =
     on_response msg;
-    if Client.has_status msg "interrupted" then report "evaluation interrupted";
     if Client.has_status msg "need-input" then
       match read_input () with
         | Some text -> send_input t text
         | None -> ()
   in
-  Fun.protect
-    (fun () ->
-       Client.read_until_done t.conn ~f id ~poll:(fun () -> act_on_signal t))
-    ~finally:(fun () ->
-      t.finished <- true;
-      (match t.interrupt with
-         | `Sent id -> Client.forget t.conn id
-         | `No | `Requested -> ());
-      List.iter (Client.forget t.conn) t.inputs)
+  let responses =
+    Fun.protect
+      (fun () ->
+         Client.read_until_done t.conn ~f id ~poll:(fun () -> act_on_signal t))
+      ~finally:(fun () ->
+        t.finished <- true;
+        (match t.interrupt with
+           | `Sent id -> Client.forget t.conn id
+           | `No | `Requested -> ());
+        List.iter (Client.forget t.conn) t.inputs)
+  in
+  Option.iter report (Client.failure_message ~op:t.op responses);
+  responses
 
 (* The handler itself only takes note, as it may run in the middle of
    anything, a request being sent included. Quitting is the exception:
