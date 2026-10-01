@@ -138,8 +138,19 @@ val send_stdin : ?on_reply:(Bencode.t -> unit) -> t -> string -> string
 val has_status : Bencode.t -> string -> bool
 (** Whether a response carries the given status. *)
 
+val failure_statuses : string list
+(** The statuses that mark a failed request: eval-error,
+    namespace-not-found and the like. *)
+
 val eval_error : Bencode.t list -> bool
-(** Whether any response in the list carries an "eval-error" status. *)
+(** Whether the responses report a failure: an "ex" field, or one of
+    the {!failure_statuses}. *)
+
+val failure_message : ?op:string -> Bencode.t list -> string option
+(** What to tell the user about a failed request ({!eval_error}),
+    unless the server's own err output already did: the ex, or a few
+    words about the status. [op] names the request in the words for
+    unknown-op. [None] for a request that went fine. *)
 
 val ops : Bencode.t list -> string list
 (** The op names from {!describe} responses, whether the server

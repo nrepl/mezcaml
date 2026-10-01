@@ -26,6 +26,49 @@ let () =
   assert (Client.versions [] = []);
   assert (Client.versions [Bencode.Dict [("versions", Bencode.Int 3)]] = []);
 
+  (* Failures: an eval-error status, an ex without one (nbb, let-go,
+     shadow-cljs), or a request the server couldn't run. *)
+  let ok = [reply "1" [("value", str "3")]; status "1" ["done"]] in
+  assert (not (Client.eval_error ok));
+  assert (Client.eval_error
+            [reply "1" [("ex", str "Error: boom")]; status "1" ["done"]]);
+  List.iter
+    (fun failure -> assert (Client.eval_error [status "1" [failure; "done"]]))
+    Client.failure_statuses;
+
+  (* The server's err explains a failure when it comes with it or
+     right next to it, in either order. *)
+  let err text = reply "1" [("err", str text)] in
+  let ex = reply "1" [("ex", str "class clojure.lang.ExceptionInfo");
+                      ("status", Bencode.List [str "eval-error"])] in
+  let done_1 = status "1" ["done"] in
+  assert (Client.failure_message ok = None);
+  assert (Client.failure_message [err "boom\n"; ex; done_1] = None);
+  assert (Client.failure_message [ex; err "boom\n"; done_1] = None);
+  assert (Client.failure_message
+            [reply "1"
+               [("err", str "boom"); ("ex", str "error:undef");
+                ("status", Bencode.List [str "eval-error"; str "done"])]]
+          = None);
+  (* Otherwise it's the ex, even after some unrelated err output. *)
+  let bare_ex = reply "1" [("ex", str "Error: boom")] in
+  assert (Client.failure_message [bare_ex; done_1] = Some "Error: boom");
+  assert (Client.failure_message
+            [err "WARNING: reflection\n"; reply "1" [("out", str "x")];
+             bare_ex; done_1]
+          = Some "Error: boom");
+  (* And failing that, a few words about the status. *)
+  assert (Client.failure_message [status "1" ["eval-error"; "done"]]
+          = Some "evaluation failed");
+  assert (Client.failure_message
+            [status "1" ["namespace-not-found"; "done"; "error"]]
+          = Some "namespace not found");
+  assert (Client.failure_message ~op:"load-file"
+            [status "1" ["error"; "unknown-op"; "done"]]
+          = Some "the server doesn't support load-file");
+  assert (Client.failure_message [status "1" ["done"; "interrupted"]]
+          = Some "evaluation interrupted");
+
   (* Ops come as a dict (nREPL) or as a plain list of names. *)
   assert (Client.ops
             [Bencode.Dict

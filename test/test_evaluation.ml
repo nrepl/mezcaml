@@ -185,6 +185,29 @@ let () =
   in
   assert (List.map op_of requests = ["eval"]);
 
+  (* A failure gets explained once, after the evaluation, and only
+     when the server's err didn't do it already. *)
+  let failing replies =
+    let reports = ref [] in
+    let _ =
+      with_server (fun _ -> replies)
+        (fun conn ->
+           Evaluation.run (Evaluation.eval conn "(throw)")
+             ~on_response:ignore
+             ~report:(fun text -> reports := text :: !reports)
+             ~read_input:(fun () -> None))
+    in
+    !reports
+  in
+  assert (failing
+            [reply "1" [("err", str "boom\n")];
+             reply "1" [("ex", str "class clojure.lang.ExceptionInfo");
+                        ("status", Bencode.List [str "eval-error"])];
+             status "1" ["done"]]
+          = []);
+  assert (failing [reply "1" [("ex", str "Error: boom")]; status "1" ["done"]]
+          = ["Error: boom"]);
+
   (* Input the evaluation asks for goes to its session, without
      waiting for the stdin request's reply. *)
   let read_line ~answer script =

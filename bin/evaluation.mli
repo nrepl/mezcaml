@@ -15,8 +15,10 @@ val run :
   read_input:(unit -> string option) -> Mezcaml.Bencode.t list
 (** Send the request and read its responses until it's done, passing
     each one to [on_response] as it arrives, and return them. [report]
-    gets what mezcaml itself has to say: an interrupted evaluation, or
-    a server that couldn't interrupt it. [read_input] answers the
+    gets what mezcaml itself has to say: a server that couldn't
+    interrupt the evaluation, and once it's done, what went wrong if
+    the server's err output didn't say (see
+    [Mezcaml.Client.failure_message]). [read_input] answers the
     server's requests for stdin (need-input): [Some text] to send,
     [Some ""] for end of input, or [None] to send nothing (the user
     pressed Ctrl-C instead). *)
