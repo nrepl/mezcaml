@@ -1,0 +1,85 @@
+(* mezcaml itself, run against a fake server. *)
+
+open Fake_server
+
+let mezcaml = "../bin/main.exe"
+
+let read_file file =
+  let ic = open_in_bin file in
+  let text = really_input_string ic (in_channel_length ic) in
+  close_in ic;
+  Sys.remove file;
+  text
+
+(* Run mezcaml with [args], [feed] writing its stdin (given mezcaml's
+   pid, to send it signals); returns how it exited and what it
+   printed. It gets a history file of its own and is killed if it's
+   still running after ten seconds. *)
+let run ?(feed = fun _ _ -> ()) args =
+  let out_file = Filename.temp_file "mezcaml-cli" ".out" in
+  let err_file = Filename.temp_file "mezcaml-cli" ".err" in
+  let open_output file =
+    Unix.openfile file [Unix.O_WRONLY; Unix.O_TRUNC; Unix.O_CLOEXEC] 0o600
+  in
+  let out = open_output out_file in
+  let err = open_output err_file in
+  let stdin_r, stdin_w = Unix.pipe ~cloexec:true () in
+  let env =
+    Array.append
+      [| "XDG_STATE_HOME=" ^ Filename.get_temp_dir_name (); "NO_COLOR=1" |]
+      (Unix.environment ())
+  in
+  let pid =
+    Unix.create_process_env mezcaml (Array.of_list (mezcaml :: args)) env
+      stdin_r out err
+  in
+  List.iter Unix.close [stdin_r; out; err];
+  (try feed pid stdin_w with Unix.Unix_error _ -> ());
+  Unix.close stdin_w;
+  let rec wait tries =
+    match Unix.waitpid [Unix.WNOHANG] pid with
+      | 0, _ when tries > 0 -> Thread.delay 0.05; wait (tries - 1)
+      | 0, _ ->
+          Unix.kill pid Sys.sigkill;
+          snd (Unix.waitpid [] pid)
+      | _, status -> status
+  in
+  let status = wait 200 in
+  (status, read_file out_file, read_file err_file)
+
+let write text fd =
+  ignore (Unix.write_substring fd text 0 (String.length text) : int)
+
+let () =
+  (* Ctrl-C at the stdin prompt of a REPL that can't use the terminal
+     (stdin a pipe, here) interrupts the evaluation, rather than send
+     it the end of its input. *)
+  let asked = ref false in
+  let (outcome, _, _), requests =
+    with_tcp_server
+      (fun request ->
+         match op_of request with
+           | "clone" -> session_reply request
+           | "eval" -> asked := true; [status (id_of request) ["need-input"]]
+           | "interrupt" ->
+               [status (id_of request) ["done"];
+                status "3" ["done"; "interrupted"]]
+           | _ -> [status (id_of request) ["done"]])
+      (fun port ->
+         run ["-p"; string_of_int port]
+           ~feed:(fun pid fd ->
+               write "(read-line)\n" fd;
+               let tries = ref 100 in
+               while not !asked && !tries > 0 do
+                 Thread.delay 0.05;
+                 decr tries
+               done;
+               Thread.delay 1.0;
+               Unix.kill pid Sys.sigint;
+               Thread.delay 1.0))
+  in
+  assert (outcome = Unix.WEXITED 0);
+  assert (List.map op_of requests
+          = ["clone"; "describe"; "eval"; "interrupt"; "close"]);
+
+  print_endline "all cli tests passed"
