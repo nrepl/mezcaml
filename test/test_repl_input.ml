@@ -31,6 +31,7 @@ let () =
   (* Dialect detection from describe's version names. *)
   assert (dialect_of_versions ["clojure"; "java"; "nrepl"] = Lisp);
   assert (dialect_of_versions ["babashka"; "nrepl"] = Lisp);
+  assert (dialect_of_versions ["jank"] = Lisp);
   assert (dialect_of_versions ["dialtone"; "erlang"; "nrepl"] = Erlang);
   (* repartee reports elixir alongside erlang; the dot rule must not win. *)
   assert (dialect_of_versions ["repartee"; "elixir"; "erlang"] = Generic);
