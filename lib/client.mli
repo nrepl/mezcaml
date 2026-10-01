@@ -105,9 +105,12 @@ val interrupt : ?interrupt_id:string -> t -> Bencode.t list
 
 val close_session : t -> Bencode.t list
 
-val completions : t -> string -> string list
-(** Completion candidates for a prefix. Servers that don't implement
-    the op yield [[]]. *)
+val completions : t -> ?op:string -> ?ns:string -> string -> string list
+(** Completion candidates for a prefix, looked up in namespace [ns]
+    if given (some servers, jank for one, don't fall back to the
+    current one). [op] defaults to "completions"; see
+    {!completion_op}. Servers that don't implement the op yield
+    [[]]. *)
 
 (** {2 Sending without waiting}
 
@@ -133,6 +136,18 @@ val has_status : Bencode.t -> string -> bool
 
 val eval_error : Bencode.t list -> bool
 (** Whether any response in the list carries an "eval-error" status. *)
+
+val ops : Bencode.t list -> string list
+(** The op names from {!describe} responses, whether the server
+    lists them as a dictionary (nREPL does) or as a plain list. Empty
+    when the responses hold no ops. *)
+
+val completion_op : string list -> string option
+(** The op to ask for completions with, given a server's {!ops}:
+    "completions", or cider-nrepl's older "complete" (same request,
+    same answer) when that's all it lists. [None] when it lists
+    neither. A server that lists no ops at all gets "completions"
+    anyway. *)
 
 val versions : Bencode.t list -> (string * string) list
 (** The version table from {!describe} responses, as (name,

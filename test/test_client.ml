@@ -21,6 +21,43 @@ let () =
   assert (Client.versions [] = []);
   assert (Client.versions [Bencode.Dict [("versions", Bencode.Int 3)]] = []);
 
+  (* Ops come as a dict (nREPL) or as a plain list of names. *)
+  assert (Client.ops
+            [Bencode.Dict
+               [("ops",
+                 Bencode.Dict [("complete", Bencode.Dict []);
+                               ("eval", Bencode.Dict [])])]]
+          = ["complete"; "eval"]);
+  assert (Client.ops
+            [Bencode.Dict [("ops", Bencode.List [str "eval"; str "stdin"])]]
+          = ["eval"; "stdin"]);
+  assert (Client.ops [describe_response] = []);
+
+  (* Completions come from whichever op the server has. *)
+  assert (Client.completion_op ["completions"; "complete"; "eval"]
+          = Some "completions");
+  assert (Client.completion_op ["complete"; "eval"] = Some "complete");
+  assert (Client.completion_op ["eval"] = None);
+  assert (Client.completion_op [] = Some "completions");
+
+  (* Completion requests carry the op and namespace asked for. *)
+  let candidates, requests =
+    with_server
+      (fun request ->
+         [reply (id_of request)
+            [("completions",
+              Bencode.List
+                [Bencode.Dict [("candidate", str "map")];
+                 Bencode.Dict [("candidate", str "mapv")]]);
+             ("status", Bencode.List [str "done"])]])
+      (fun conn -> Client.completions conn ~op:"complete" ~ns:"user" "ma")
+  in
+  assert (candidates = ["map"; "mapv"]);
+  assert (requests
+          = [message
+               [("id", str "1"); ("ns", str "user"); ("op", str "complete");
+                ("prefix", str "ma")]]);
+
   (* Requests carry an id and, once cloned, the session. *)
   let _, requests =
     with_server
