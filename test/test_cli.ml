@@ -126,4 +126,13 @@ let () =
             "unexpected response from the server: \
              nREPL server did not return a session");
 
+  (* A host that doesn't resolve gets an error message too. *)
+  let outcome, _, err =
+    run ["--host"; "no-such-host.invalid"; "-p"; "1"; "-e"; "1"]
+  in
+  assert (outcome = Unix.WEXITED 1);
+  assert (err
+          = "cannot connect to no-such-host.invalid:1: \
+             cannot resolve host \"no-such-host.invalid\"\n");
+
   print_endline "all cli tests passed"

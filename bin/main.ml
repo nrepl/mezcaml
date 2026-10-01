@@ -282,8 +282,11 @@ let () =
     try
       Mezcaml.Client.connect ?timeout ~other:(Output.stray (output ()))
         ~host:!host ~port:!port ()
-    with Unix.Unix_error (error, _, _) ->
-      die "cannot connect to %s:%d: %s" !host !port (Unix.error_message error)
+    with
+      | Unix.Unix_error (error, _, _) ->
+          die "cannot connect to %s:%d: %s" !host !port
+            (Unix.error_message error)
+      | Failure msg -> die "cannot connect to %s:%d: %s" !host !port msg
   in
   guard_server_errors (fun () ->
     ignore (Mezcaml.Client.clone conn : string));
