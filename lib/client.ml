@@ -440,8 +440,11 @@ let versions responses =
     | Some (Bencode.Dict entries) ->
         List.map
           (fun (name, entry) ->
-             (name,
-              Option.value ~default:""
-                (Bencode.get_string entry "version-string")))
+             match entry with
+               | Bencode.String version -> (name, version)
+               | _ ->
+                   (name,
+                    Option.value ~default:""
+                      (Bencode.get_string entry "version-string")))
           entries
     | _ -> []
