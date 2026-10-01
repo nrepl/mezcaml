@@ -19,6 +19,7 @@ let evaluate ?(before = ignore) ?(during = fun _ _ -> ()) script =
          Evaluation.run evaluation
            ~on_response:(fun msg -> during evaluation msg)
            ~report:(fun text -> reports := text :: !reports)
+           ~read_input:(fun () -> None)
        in
        (evaluation, responses, List.rev !reports))
 
@@ -48,6 +49,7 @@ let () =
              ~on_response:(fun _ ->
                  presses := Evaluation.ctrl_c evaluation :: !presses)
              ~report:(fun text -> reports := text :: !reports)
+             ~read_input:(fun () -> None)
          in
          ((evaluation, responses, List.rev !reports),
           Client.eval conn "(+ 1 2)"))
@@ -116,7 +118,7 @@ let () =
            let current = Sys.signal Sys.sigint Sys.Signal_default in
            Sys.set_signal Sys.sigint current;
            ignore (Evaluation.run evaluation ~on_response:ignore
-                     ~report:ignore
+                     ~report:ignore ~read_input:(fun () -> None)
                    : Bencode.t list);
            current))
   in
@@ -150,6 +152,7 @@ let () =
            let signal = sigint_later 0.2 in
            let responses =
              Evaluation.run evaluation ~on_response:ignore ~report:ignore
+               ~read_input:(fun () -> None)
            in
            Thread.join signal;
            responses))
@@ -174,11 +177,201 @@ let () =
          let evaluation = Evaluation.eval conn "(+ 1 2)" in
          Evaluation.with_sigint evaluation (fun () ->
            ignore (Evaluation.run evaluation ~on_response:ignore ~report:ignore
+                     ~read_input:(fun () -> None)
                    : Bencode.t list);
            Unix.kill (Unix.getpid ()) Sys.sigint;
            try Thread.delay 0.1
            with Unix.Unix_error (Unix.EINTR, _, _) -> ()))
   in
   assert (List.map op_of requests = ["eval"]);
+
+  (* Input the evaluation asks for goes to its session, without
+     waiting for the stdin request's reply. *)
+  let read_line ~answer script =
+    with_server
+      (fun request ->
+         match op_of request with
+           | "clone" -> session_reply request
+           | "eval" -> [status "2" ["need-input"]]
+           | _ -> script request)
+      (fun conn ->
+         ignore (Client.clone conn : string);
+         Evaluation.run (Evaluation.eval conn "(read-line)")
+           ~on_response:ignore ~report:ignore ~read_input:(fun () -> answer))
+  in
+  let responses, requests =
+    read_line ~answer:(Some "hello\n")
+      (fun request ->
+         [status (id_of request) ["done"];
+          reply "2" [("value", str "\"hello\"")]; status "2" ["done"]])
+  in
+  assert (responses
+          = [status "2" ["need-input"];
+             reply "2" [("value", str "\"hello\"")]; status "2" ["done"]]);
+  assert (List.nth requests 2
+          = message
+              [("id", str "3"); ("op", str "stdin"); ("session", str "s1");
+               ("stdin", str "hello\n")]);
+
+  (* Ctrl-C at the prompt ([None]) sends nothing. *)
+  let _, requests =
+    with_server
+      (fun request ->
+         match op_of request with
+           | "clone" -> session_reply request
+           | _ ->
+               [status "2" ["need-input"];
+                status "2" ["done"; "interrupted"]])
+      (fun conn ->
+         ignore (Client.clone conn : string);
+         Evaluation.run (Evaluation.eval conn "(read-line)")
+           ~on_response:ignore ~report:ignore ~read_input:(fun () -> None))
+  in
+  assert (List.map op_of requests = ["clone"; "eval"]);
+
+  (* Tab completion at the stdin prompt doesn't steal the evaluation's
+     own replies. *)
+  let (responses, candidates), _ =
+    with_server
+      (fun request ->
+         match op_of request with
+           | "eval" -> [status "1" ["need-input"]]
+           | "completions" ->
+               [reply "1" [("out", str "tick\n")];
+                reply (id_of request)
+                  [("completions",
+                    Bencode.List [Bencode.Dict [("candidate", str "map")]]);
+                   ("status", Bencode.List [str "done"])]]
+           | _ ->
+               [status (id_of request) ["done"];
+                reply "1" [("value", str "\"m\"")]; status "1" ["done"]])
+      (fun conn ->
+         let candidates = ref [] in
+         let responses =
+           Evaluation.run (Evaluation.eval conn "(read-line)")
+             ~on_response:ignore ~report:ignore
+             ~read_input:(fun () ->
+                 candidates := Client.completions conn "ma";
+                 Some "m\n")
+         in
+         (responses, !candidates))
+  in
+  assert (candidates = ["map"]);
+  assert (responses
+          = [status "1" ["need-input"]; reply "1" [("out", str "tick\n")];
+             reply "1" [("value", str "\"m\"")]; status "1" ["done"]]);
+
+  (* UTF-8 characters are never cut in half. *)
+  assert (Evaluation.utf8_boundary "" = 0);
+  assert (Evaluation.utf8_boundary "abc" = 3);
+  assert (Evaluation.utf8_boundary "a\xc3" = 1);
+  assert (Evaluation.utf8_boundary "a\xc3\xa9" = 3);
+  assert (Evaluation.utf8_boundary "\xe2\x82" = 0);
+  assert (Evaluation.utf8_boundary "\xe2\x82\xac" = 3);
+  assert (Evaluation.utf8_boundary "x\xf0\x9f\x98" = 1);
+  assert (Evaluation.utf8_boundary "\xf0\x9f\x98\x80" = 4);
+  (* Not UTF-8 at all: passed on as it is. *)
+  assert (Evaluation.utf8_boundary "\x80\x80\x80\x80" = 4);
+
+  (* Forwarded stdin keeps the tail of a split character for the next
+     answer, reads on when a read brings nothing complete, and flushes
+     what's left at the end of input before reporting it. *)
+  let write fd text =
+    ignore (Unix.write_substring fd text 0 (String.length text) : int)
+  in
+  let later fd text =
+    Thread.create (fun () -> Thread.delay 0.1; write fd text) ()
+  in
+  let input, output = Unix.pipe () in
+  let read = Evaluation.input_reader input in
+  write output "a\xc3";
+  assert (read () = Some "a");
+  write output "\xa9b";
+  assert (read () = Some "\xc3\xa9b");
+  write output "\xe2";
+  let writer = later output "\x82\xac" in
+  assert (read () = Some "\xe2\x82\xac");
+  Thread.join writer;
+  write output "\xe2\x82";
+  Unix.close output;
+  assert (read () = Some "\xe2\x82");
+  assert (read () = Some "");
+  Unix.close input;
+
+  (* A stdin left non-blocking gets waited on, not taken for its
+     end. *)
+  let input, output = Unix.pipe () in
+  Unix.set_nonblock input;
+  let read = Evaluation.input_reader input in
+  let writer = later output "late\n" in
+  assert (read () = Some "late\n");
+  Thread.join writer;
+  Unix.close output;
+  Unix.close input;
+
+  (* A signal (Ctrl-C, in real life) gets the evaluation out of a read
+     that's still waiting for input. *)
+  let input, output = Unix.pipe () in
+  let read = Evaluation.input_reader input in
+  Sys.set_signal Sys.sigalrm (Sys.Signal_handle ignore);
+  ignore (Unix.setitimer Unix.ITIMER_REAL
+            { Unix.it_interval = 0.0; it_value = 0.1 }
+          : Unix.interval_timer_status);
+  assert (read () = None);
+  Sys.set_signal Sys.sigalrm Sys.Signal_default;
+  Unix.close output;
+  Unix.close input;
+
+  (* A server that leaves ids out: an evaluation's input, a Tab
+     completion at its stdin prompt and an interrupt for it all get
+     through, by order. *)
+  let bare fields = message fields in
+  let bare_status statuses =
+    bare [("status", Bencode.List (List.map str statuses))]
+  in
+  let (responses, candidates), requests =
+    with_server
+      (fun request ->
+         match op_of request with
+           | "eval" -> [bare_status ["need-input"]]
+           | "completions" ->
+               [bare [("completions",
+                       Bencode.List [Bencode.Dict [("candidate", str "map")]])];
+                bare_status ["done"]]
+           | _ ->
+               [bare_status ["done"]; bare [("value", str "\"m\"")];
+                bare_status ["done"]])
+      (fun conn ->
+         let candidates = ref [] in
+         let responses =
+           Evaluation.run (Evaluation.eval conn "(read-line)")
+             ~on_response:ignore ~report:ignore
+             ~read_input:(fun () ->
+                 candidates := Client.completions conn "ma";
+                 Some "m\n")
+         in
+         (responses, !candidates))
+  in
+  assert (candidates = ["map"]);
+  assert (responses
+          = [bare_status ["need-input"]; bare [("value", str "\"m\"")];
+             bare_status ["done"]]);
+  assert (List.map op_of requests = ["eval"; "completions"; "stdin"]);
+  let responses, _ =
+    with_server
+      (fun request ->
+         match op_of request with
+           | "eval" -> [bare [("out", str "working\n")]]
+           | _ -> [bare_status ["done"]; bare_status ["done"; "interrupted"]])
+      (fun conn ->
+         let evaluation = Evaluation.eval conn "(loop [] (recur))" in
+         Evaluation.run evaluation ~report:ignore ~read_input:(fun () -> None)
+           ~on_response:(fun _ ->
+               ignore (Evaluation.ctrl_c evaluation
+                       : [ `Interrupting | `Quit | `Ignored ])))
+  in
+  assert (responses
+          = [bare [("out", str "working\n")];
+             bare_status ["done"; "interrupted"]]);
 
   print_endline "all evaluation tests passed"

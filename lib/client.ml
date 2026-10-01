@@ -323,6 +323,10 @@ let send_interrupt ?on_reply ?interrupt_id conn =
            | Some id -> [("interrupt-id", Bencode.String id)]
            | None -> []))
 
+let send_stdin ?on_reply conn text =
+  send ?on_reply conn
+    [("op", Bencode.String "stdin"); ("stdin", Bencode.String text)]
+
 let eval conn ?f code = read_until_done conn ?f (send_eval conn code)
 
 let load_file conn ?f ?file_name contents =

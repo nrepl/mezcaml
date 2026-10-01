@@ -1,3 +1,10 @@
 (tests
- (names test_bencode test_client test_evaluation test_output test_repl_input)
+ (names
+  test_bencode
+  test_cli
+  test_client
+  test_evaluation
+  test_output
+  test_repl_input)
+ (deps ../bin/main.exe)
  (libraries mezcaml repl_input output evaluation unix threads.posix))

@@ -105,6 +105,11 @@ Ctrl-C during an evaluation sends the server an `interrupt` for it
 (Babashka and Basilisp can't), and there the evaluation simply runs
 to its end. A second Ctrl-C quits mezcaml.
 
+Code that reads from stdin gets its input at a `stdin>` prompt, and
+Ctrl-D there sends end of input. With `-e` and `--load`, mezcaml
+passes its own stdin along instead, so
+`echo hi | mezcaml -e '(read-line)'` does what you'd expect.
+
 One-shot evaluation (exit code reflects success, handy for scripts):
 
 ```
@@ -151,7 +156,10 @@ The library is three small modules:
 
 By design, at least for now:
 
-- Synchronous, one request in flight at a time. Fine for a CLI and simple
+- Synchronous: mezcaml reads replies only while it waits for a
+  request. It has more than one in flight only while an evaluation
+  runs: the input it asks for, an interrupt for it, and a Tab
+  completion at its `stdin>` prompt. Fine for a CLI and simple
   tooling; an editor integration would want an async layer on top.
 - No TLS, no EDN transport, only the default bencode one.
 - A server that leaves ids out of its replies gets followed by the

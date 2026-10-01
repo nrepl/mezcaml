@@ -26,6 +26,11 @@ val print_output : t -> Mezcaml.Bencode.t -> unit
 val report : t -> string -> unit
 (** One of mezcaml's own messages, on a line of its own on stderr. *)
 
+val fresh_line : t -> unit
+(** Make sure the terminal's cursor is at the start of a line, before
+    a prompt: linenoise draws its prompt from column 0, wiping
+    whatever was left on that line. *)
+
 val ctrl_c_echoed : t -> unit
 (** Note that the terminal echoed a ^C: what's printed next starts on
     a new line. *)

@@ -112,15 +112,19 @@ val completions : t -> string -> string list
 (** {2 Sending without waiting}
 
     For callers that read the replies themselves (see {!send} and
-    {!read_until_done}). While an evaluation runs, an interrupt for it
-    has to go out without waiting for a reply. Each returns the id of
-    the message sent. *)
+    {!read_until_done}). While an evaluation runs, the input it asks
+    for and an interrupt for it have to go out without waiting for a
+    reply. Each returns the id of the message sent. *)
 
 val send_eval : t -> string -> string
 val send_load_file : t -> ?file_name:string -> string -> string
 
 val send_interrupt :
   ?on_reply:(Bencode.t -> unit) -> ?interrupt_id:string -> t -> string
+
+val send_stdin : ?on_reply:(Bencode.t -> unit) -> t -> string -> string
+(** Input for the session's evaluation, answering a "need-input"
+    status. [""] means end of input. *)
 
 (** {2 Response helpers} *)
 

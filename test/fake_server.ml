@@ -109,3 +109,32 @@ let with_server ?(timeout = 30.0) ?(delay = 0.0) ?other script run =
       (fun () -> run conn)
   in
   (result, List.rev !requests)
+
+(* [with_tcp_server script run] is like {!with_server}, for mezcaml
+   itself: [run] gets the port of a server listening on localhost,
+   which answers the first connection it gets. *)
+let with_tcp_server script run =
+  let listener = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Unix.setsockopt listener Unix.SO_REUSEADDR true;
+  Unix.bind listener (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
+  Unix.listen listener 1;
+  let port =
+    match Unix.getsockname listener with
+      | Unix.ADDR_INET (_, port) -> port
+      | _ -> assert false
+  in
+  let requests = ref [] in
+  let accept () =
+    match Unix.select [listener] [] [] 10.0 with
+      | [], _, _ -> ()
+      | _ ->
+          let fd, _ = Unix.accept listener in
+          serve fd script requests
+  in
+  let thread = Thread.create accept () in
+  let result =
+    Fun.protect
+      ~finally:(fun () -> Thread.join thread; Unix.close listener)
+      (fun () -> run port)
+  in
+  (result, List.rev !requests)

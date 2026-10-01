@@ -74,14 +74,22 @@ let server_description versions =
 (* Print an evaluation's responses as they arrive. Meanwhile Ctrl-C
    asks the server to interrupt it instead of killing mezcaml, which
    would leave the evaluation running and the session open. A second
-   Ctrl-C does kill mezcaml, for servers that can't interrupt. *)
-let evaluate evaluation =
+   Ctrl-C does kill mezcaml, for servers that can't interrupt.
+
+   [read_input] answers the server's requests for stdin. *)
+let evaluate ~read_input evaluation =
   let output = output () in
   Evaluation.with_sigint evaluation
     ~on_signal:(fun () -> Output.ctrl_c_echoed output)
     (fun () ->
        Evaluation.run evaluation ~on_response:(Output.print_response output)
-         ~report:(Output.report output))
+         ~report:(Output.report output)
+         ~read_input:(fun () -> read_input evaluation))
+
+(* With -e and --load the evaluation reads mezcaml's own stdin. *)
+let forward_stdin =
+  let read = Evaluation.input_reader Unix.stdin in
+  fun _ -> read ()
 
 (* +-----------------------------------------------------------------+
    | Interactive REPL                                                |
@@ -112,6 +120,19 @@ let linenoise prompt =
   Fun.protect
     (fun () -> LNoise.linenoise prompt)
     ~finally:(fun () -> Output.release (output ()))
+
+(* A line for the evaluation's stdin, read at a prompt of its own.
+   Ctrl-D sends end of input. *)
+let prompt_for_input evaluation =
+  Output.fresh_line (output ());
+  match linenoise "stdin> " with
+    | Some line -> Some (line ^ "\n")
+    (* Without a terminal to put in raw mode (TERM=dumb, stdin a
+       pipe), linenoise reads with fgets, which a SIGINT cuts short as
+       if the input had ended. *)
+    | None when Evaluation.ctrl_c_pending evaluation -> None
+    | None -> Some ""
+    | exception Sys.Break -> Evaluation.press_ctrl_c evaluation; None
 
 let setup_line_editor conn =
   LNoise.set_multiline true;
@@ -191,7 +212,8 @@ let repl conn =
           ignore (Mezcaml.Client.close_session conn : Mezcaml.Bencode.t list)
       | `Form form ->
           save_history ();
-          ignore (evaluate (Evaluation.eval conn form)
+          ignore (evaluate ~read_input:prompt_for_input
+                    (Evaluation.eval conn form)
                   : Mezcaml.Bencode.t list);
           loop ()
   in
@@ -241,7 +263,7 @@ let () =
      | Some code, _ ->
          let responses =
            guard_server_errors (fun () ->
-             evaluate (Evaluation.eval conn code))
+             evaluate ~read_input:forward_stdin (Evaluation.eval conn code))
          in
          Mezcaml.Client.close conn;
          exit (if Mezcaml.Client.eval_error responses then 1 else 0)
@@ -256,7 +278,7 @@ let () =
          in
          let responses =
            guard_server_errors (fun () ->
-             evaluate
+             evaluate ~read_input:forward_stdin
                (Evaluation.load_file conn ~file_name:(Filename.basename file)
                   contents))
          in
