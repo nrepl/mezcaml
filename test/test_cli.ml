@@ -13,15 +13,21 @@ let read_file file =
 
 (* Run mezcaml with [args], [feed] writing its stdin (given mezcaml's
    pid, to send it signals); returns how it exited and what it
-   printed. It gets a history file of its own and is killed if it's
-   still running after ten seconds. *)
-let run ?(feed = fun _ _ -> ()) args =
+   printed. With [stdout], that's where its output goes instead of a
+   file to read back: a pipe nobody reads, say. It starts with SIGPIPE
+   at its default (the tests ignore it), gets a history file of its
+   own and is killed if it's still running after ten seconds. *)
+let run ?(feed = fun _ _ -> ()) ?stdout args =
   let out_file = Filename.temp_file "mezcaml-cli" ".out" in
   let err_file = Filename.temp_file "mezcaml-cli" ".err" in
   let open_output file =
     Unix.openfile file [Unix.O_WRONLY; Unix.O_TRUNC; Unix.O_CLOEXEC] 0o600
   in
-  let out = open_output out_file in
+  let out =
+    match stdout with
+      | Some stdout -> stdout ()
+      | None -> open_output out_file
+  in
   let err = open_output err_file in
   let stdin_r, stdin_w = Unix.pipe ~cloexec:true () in
   let env =
@@ -29,10 +35,12 @@ let run ?(feed = fun _ _ -> ()) args =
       [| "XDG_STATE_HOME=" ^ Filename.get_temp_dir_name (); "NO_COLOR=1" |]
       (Unix.environment ())
   in
+  Sys.set_signal Sys.sigpipe Sys.Signal_default;
   let pid =
     Unix.create_process_env mezcaml (Array.of_list (mezcaml :: args)) env
       stdin_r out err
   in
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   List.iter Unix.close [stdin_r; out; err];
   (try feed pid stdin_w with Unix.Unix_error _ -> ());
   Unix.close stdin_w;
@@ -46,6 +54,12 @@ let run ?(feed = fun _ _ -> ()) args =
   in
   let status = wait 200 in
   (status, read_file out_file, read_file err_file)
+
+(* A pipe whose other end is already closed. *)
+let nobody_reads () =
+  let reader, writer = Unix.pipe ~cloexec:true () in
+  Unix.close reader;
+  writer
 
 let write text fd =
   ignore (Unix.write_substring fd text 0 (String.length text) : int)
@@ -134,5 +148,53 @@ let () =
   assert (err
           = "cannot connect to no-such-host.invalid:1: \
              cannot resolve host \"no-such-host.invalid\"\n");
+
+  (* A server that resets the connection gets reported, rather than
+     have mezcaml die of SIGPIPE writing to it. *)
+  let (outcome, _, err), _ =
+    with_tcp_server
+      (fun request ->
+         match op_of request with
+           | "clone" -> session_reply request
+           | _ -> [status (id_of request) ["need-input"]; hang_up])
+      (fun port ->
+         run ["-p"; string_of_int port; "-e"; "(read-line)"]
+           ~feed:(fun _ fd -> Thread.delay 0.3; write "hello\n" fd))
+  in
+  assert (outcome = Unix.WEXITED 1);
+  assert (String.length err > 15 && String.sub err 0 15 = "lost the server");
+
+  (* A stdout that goes away still ends mezcaml the way SIGPIPE always
+     did. *)
+  let (outcome, _, err), _ =
+    with_tcp_server (server ~on_close:(fun _ -> []))
+      (fun port ->
+         run ["-p"; string_of_int port; "-e"; "(+ 1 2)"] ~stdout:nobody_reads)
+  in
+  assert (outcome = Unix.WSIGNALED Sys.sigpipe);
+  assert (err = "");
+
+  (* So does one that goes away before the REPL has printed anything
+     but the newline it quits on. *)
+  let (outcome, _, err), _ =
+    with_tcp_server (server ~on_close:(fun _ -> []))
+      (fun port -> run ["-p"; string_of_int port] ~stdout:nobody_reads)
+  in
+  assert (outcome = Unix.WSIGNALED Sys.sigpipe);
+  assert (err = "");
+
+  (* Other trouble with stdout (a full disk, where there's a /dev/full
+     to stand for one) gets reported. *)
+  if Sys.file_exists "/dev/full" then begin
+    let (outcome, _, err), _ =
+      with_tcp_server (server ~on_close:(fun _ -> []))
+        (fun port ->
+           run ["-p"; string_of_int port; "-e"; "(+ 1 2)"]
+             ~stdout:(fun () ->
+                 Unix.openfile "/dev/full" [Unix.O_WRONLY; Unix.O_CLOEXEC] 0))
+    in
+    assert (outcome = Unix.WEXITED 1);
+    assert (err = "cannot write the output: No space left on device\n")
+  end;
 
   print_endline "all cli tests passed"

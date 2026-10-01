@@ -31,6 +31,9 @@ val fresh_line : t -> unit
     a prompt: linenoise draws its prompt from column 0, wiping
     whatever was left on that line. *)
 
+val end_line : t -> unit
+(** A newline on stdout. *)
+
 val ctrl_c_echoed : t -> unit
 (** Note that the terminal echoed a ^C: what's printed next starts on
     a new line. *)
