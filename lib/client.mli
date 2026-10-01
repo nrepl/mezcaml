@@ -14,7 +14,8 @@ val connect :
   ?timeout:float -> ?other:(Bencode.t -> unit) -> host:string -> port:int ->
   unit -> t
 (** Open a TCP connection to an nREPL server. Raises
-    [Unix.Unix_error] if the connection fails.
+    [Unix.Unix_error] if the connection fails, and [Failure] if [host]
+    doesn't resolve.
 
     [other] gets the replies that belong to no request still waiting
     for them: output an evaluation printed after its "done", say, or
