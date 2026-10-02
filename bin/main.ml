@@ -166,7 +166,9 @@ let setup_line_editor conn ~ops =
      | None -> ());
   (* Tab completion: ask the server about the trailing token (see
      Repl_input), with whichever completion op it has. A server hiccup
-     must not take down the line editor. *)
+     must not take down the line editor, and one that doesn't answer
+     (busy with an evaluation waiting at stdin>, say) mustn't keep the
+     terminal in raw mode for long. *)
   let op = Mezcaml.Client.completion_op ops in
   LNoise.set_completion_callback
     (fun line completions ->
@@ -174,7 +176,8 @@ let setup_line_editor conn ~ops =
        if token <> "" && op <> None then
          match
            Output.hold (output ()) (fun () ->
-             Mezcaml.Client.completions conn ?op ?ns:!current_ns token)
+             Mezcaml.Client.completions conn ~timeout:3.0 ?op
+               ?ns:!current_ns token)
          with
            | candidates ->
                List.iter

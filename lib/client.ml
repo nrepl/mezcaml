@@ -30,6 +30,9 @@ type t = {
   pending : (string, pending) Hashtbl.t;
   mutable reading : pending list;
   mutable deadline : float option;
+  (* Like [deadline], but only for waiting for a message to start, so
+     that one that has started is never cut short. *)
+  mutable start_deadline : float option;
   mutable session : string option;
   mutable counter : int;
 }
@@ -46,6 +49,7 @@ let of_channels ?timeout ?(other = fun _ -> ()) ic oc =
     pending = Hashtbl.create 8;
     reading = [];
     deadline = None;
+    start_deadline = None;
     session = None;
     counter = 0 }
 
@@ -95,15 +99,18 @@ let session conn = conn.session
 (* Wait until the server's end can be read from (or written to), for no
    longer than the connection's timeout, or past its deadline, calling
    [poll] first and every tenth of a second meanwhile. *)
-let wait ?poll ~write conn =
-  let until =
-    match
-      Option.map (fun seconds -> Unix.gettimeofday () +. seconds) conn.timeout,
-      conn.deadline
-    with
+let wait ?poll ?(starting = false) ~write conn =
+  let earliest a b =
+    match a, b with
       | Some a, Some b -> Some (Float.min a b)
       | a, None -> a
       | None, b -> b
+  in
+  let until =
+    earliest
+      (Option.map (fun seconds -> Unix.gettimeofday () +. seconds) conn.timeout)
+      (earliest conn.deadline
+         (if starting then conn.start_deadline else None))
   in
   let rec loop () =
     Option.iter (fun poll -> poll ()) poll;
@@ -128,14 +135,14 @@ let wait ?poll ~write conn =
   in
   loop ()
 
-let rec refill ?poll conn =
-  wait ?poll ~write:false conn;
+let rec refill ?poll ?starting conn =
+  wait ?poll ?starting ~write:false conn;
   match Unix.read conn.input conn.buffer 0 (Bytes.length conn.buffer) with
     | 0 -> raise End_of_file
     | n -> conn.start <- 0; conn.stop <- n
     | exception
         Unix.Unix_error ((Unix.EINTR | Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
-        refill ?poll conn
+        refill ?poll ?starting conn
 
 (* What's read of a message is kept until the message is whole. If the
    reading stops before that (a timeout, say), it goes back in front
@@ -144,7 +151,8 @@ let rec refill ?poll conn =
 let read_message ?poll conn =
   let read = Buffer.create 256 in
   let next () =
-    if conn.start = conn.stop then refill ?poll conn;
+    if conn.start = conn.stop then
+      refill ?poll ~starting:(Buffer.length read = 0) conn;
     let c = Bytes.get conn.buffer conn.start in
     conn.start <- conn.start + 1;
     Buffer.add_char read c;
@@ -375,13 +383,20 @@ let close_session ?timeout conn =
   conn.session <- None;
   responses
 
-let completions conn ?(op = "completions") ?ns prefix =
-  let responses =
+let completions ?timeout conn ?(op = "completions") ?ns prefix =
+  let ask () =
     request conn
       ([("op", Bencode.String op); ("prefix", Bencode.String prefix)]
        @ (match ns with
             | Some ns -> [("ns", Bencode.String ns)]
             | None -> []))
+  in
+  let responses =
+    match timeout with
+      | Some seconds ->
+          conn.start_deadline <- Some (Unix.gettimeofday () +. seconds);
+          Fun.protect ask ~finally:(fun () -> conn.start_deadline <- None)
+      | None -> ask ()
   in
   List.concat_map
     (fun msg ->
