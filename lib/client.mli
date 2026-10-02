@@ -110,12 +110,15 @@ val close_session : ?timeout:float -> t -> Bencode.t list
     much else the server sends meanwhile, and raise
     [Sys_blocked_io]. *)
 
-val completions : t -> ?op:string -> ?ns:string -> string -> string list
+val completions :
+  ?timeout:float -> t -> ?op:string -> ?ns:string -> string -> string list
 (** Completion candidates for a prefix, looked up in namespace [ns]
     if given (some servers, jank for one, don't fall back to the
     current one). [op] defaults to "completions"; see
     {!completion_op}. Servers that don't implement the op yield
-    [[]]. *)
+    [[]]. With [timeout] (in seconds), give up and raise
+    [Sys_blocked_io] when no reply has started by then; one that has
+    is read to its end. *)
 
 (** {2 Sending without waiting}
 

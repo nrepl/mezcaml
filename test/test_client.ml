@@ -360,6 +360,58 @@ let () =
             = [reply "2" [("value", str "3")]; status "2" ["done"]]);
     assert (!strays = [status "1" ["done"]]));
 
+  (* A completion the server doesn't answer gives up in time (well
+     short of the connection's own thirty seconds), and its reply, if
+     it comes later, is a stray... *)
+  case "a completion's deadline" (fun () ->
+    let strays = ref [] in
+    let (outcome, responses), _ =
+      with_server ~other:(fun msg -> strays := msg :: !strays)
+        (fun request ->
+           if op_of request = "completions" then []
+           else status "1" ["done"] :: answer "3" request)
+        (fun conn ->
+           let started = Unix.gettimeofday () in
+           let outcome =
+             match Client.completions conn ~timeout:0.3 "ma" with
+               | _ -> `Answered
+               | exception Sys_blocked_io ->
+                   `Gave_up (Unix.gettimeofday () -. started)
+           in
+           (outcome, Client.eval conn "(+ 1 2)"))
+    in
+    assert (match outcome with
+              | `Gave_up after -> after < 25.0
+              | `Answered -> false);
+    assert (responses
+            = [reply "2" [("value", str "3")]; status "2" ["done"]]);
+    assert (!strays = [status "1" ["done"]]);
+    (* ...but one whose reply has started is read to its end, however
+       long the rest takes. The start goes out with the reply to an
+       earlier request, so it's there before the deadline whatever the
+       machine's speed. *)
+    let whole =
+      encoded
+        (reply "2"
+           [("completions",
+             Bencode.List [Bencode.Dict [("candidate", str "map")]]);
+            ("status", Bencode.List [str "done"])])
+    in
+    let half = String.length whole / 2 in
+    let candidates, _ =
+      with_server
+        (fun request ->
+           if op_of request = "describe" then
+             [status (id_of request) ["done"]; raw (String.sub whole 0 half)]
+           else
+             [pause 1.0;
+              raw (String.sub whole half (String.length whole - half))])
+        (fun conn ->
+           ignore (Client.describe conn : Bencode.t list);
+           Client.completions conn ~timeout:0.3 "ma")
+    in
+    assert (candidates = ["map"]));
+
   (* A reply that stalls halfway past a deadline doesn't leave the next
      request reading from its middle: it picks up where the reply
      started, and the reply turns out to be a stray. The second half
