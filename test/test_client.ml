@@ -360,6 +360,35 @@ let () =
             = [reply "2" [("value", str "3")]; status "2" ["done"]]);
     assert (!strays = [status "1" ["done"]]));
 
+  (* A reply that stalls halfway past a deadline doesn't leave the next
+     request reading from its middle: it picks up where the reply
+     started, and the reply turns out to be a stray. The second half
+     comes with the next request's reply, so that nothing hangs on how
+     fast the machine is. *)
+  case "a reply that stalls halfway" (fun () ->
+    let strays = ref [] in
+    let whole = encoded (status "1" ["done"]) in
+    let half = String.length whole / 2 in
+    let (timed_out, responses), _ =
+      with_server ~other:(fun msg -> strays := msg :: !strays)
+        (fun request ->
+           if op_of request = "close" then [raw (String.sub whole 0 half)]
+           else
+             raw (String.sub whole half (String.length whole - half))
+             :: answer "3" request)
+        (fun conn ->
+           let timed_out =
+             match Client.close_session ~timeout:0.3 conn with
+               | _ -> false
+               | exception Sys_blocked_io -> true
+           in
+           (timed_out, Client.eval conn "(+ 1 2)"))
+    in
+    assert timed_out;
+    assert (responses
+            = [reply "2" [("value", str "3")]; status "2" ["done"]]);
+    assert (!strays = [status "1" ["done"]]));
+
   (* A request given up on: what it got, and what it gets later, are
      strays. *)
   let strays = ref [] in

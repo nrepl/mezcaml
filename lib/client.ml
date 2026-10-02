@@ -23,7 +23,7 @@ type t = {
   input : Unix.file_descr;
   output : Unix.file_descr;
   timeout : float option;
-  buffer : Bytes.t;
+  mutable buffer : Bytes.t;
   mutable start : int;
   mutable stop : int;
   other : Bencode.t -> unit;
@@ -137,11 +137,17 @@ let rec refill ?poll conn =
         Unix.Unix_error ((Unix.EINTR | Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
         refill ?poll conn
 
+(* What's read of a message is kept until the message is whole. If the
+   reading stops before that (a timeout, say), it goes back in front
+   of the rest, so the next reading starts from the message's start
+   rather than from its middle. *)
 let read_message ?poll conn =
+  let read = Buffer.create 256 in
   let next () =
     if conn.start = conn.stop then refill ?poll conn;
     let c = Bytes.get conn.buffer conn.start in
     conn.start <- conn.start + 1;
+    Buffer.add_char read c;
     c
   in
   let take n =
@@ -150,11 +156,23 @@ let read_message ?poll conn =
       if conn.start = conn.stop then refill ?poll conn;
       let count = min (n - Buffer.length text) (conn.stop - conn.start) in
       Buffer.add_subbytes text conn.buffer conn.start count;
+      Buffer.add_subbytes read conn.buffer conn.start count;
       conn.start <- conn.start + count
     done;
     Buffer.contents text
   in
-  Bencode.read_from ~next ~take
+  match Bencode.read_from ~next ~take with
+    | msg -> msg
+    | exception e ->
+        let rest = conn.stop - conn.start in
+        let length = Buffer.length read + rest in
+        let buffer = Bytes.create (max length (Bytes.length conn.buffer)) in
+        Buffer.blit read 0 buffer 0 (Buffer.length read);
+        Bytes.blit conn.buffer conn.start buffer (Buffer.length read) rest;
+        conn.buffer <- buffer;
+        conn.start <- 0;
+        conn.stop <- length;
+        raise e
 
 let write conn text =
   let rec loop offset =
