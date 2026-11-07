@@ -5,6 +5,8 @@
   test_client
   test_evaluation
   test_output
-  test_repl_input)
+  test_repl_input
+  test_terminal)
  (deps ../bin/main.exe)
- (libraries mezcaml repl_input output evaluation unix threads.posix))
+ (libraries mezcaml repl_input output evaluation terminal unix
+  threads.posix))

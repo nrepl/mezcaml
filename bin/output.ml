@@ -54,10 +54,8 @@ let style enabled code text =
 let guarded t stream f =
   try f () with
     | Sys_error message when stream == t.out ->
-        if message = Unix.error_message Unix.EPIPE then begin
-          Sys.set_signal Sys.sigpipe Sys.Signal_default;
-          Unix.kill (Unix.getpid ()) Sys.sigpipe
-        end
+        if message = Unix.error_message Unix.EPIPE then
+          Terminal.die_of Sys.sigpipe
         else begin
           (try prerr_endline ("cannot write the output: " ^ message)
            with Sys_error _ -> ());
