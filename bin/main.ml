@@ -90,7 +90,8 @@ let on_response msg =
 let evaluate ~read_input evaluation =
   let output = output () in
   Evaluation.with_sigint evaluation
-    ~on_signal:(fun () -> Output.ctrl_c_echoed output)
+    ~on_signal:(fun () ->
+      if Terminal.echoes () then Output.ctrl_c_echoed output)
     (fun () ->
        Evaluation.run evaluation ~on_response ~report:(Output.report output)
          ~read_input:(fun () -> read_input evaluation))
@@ -248,7 +249,7 @@ let repl conn =
                   : Mezcaml.Bencode.t list);
           loop ()
   in
-  loop ()
+  Terminal.keeping_typeahead loop
 
 (* +-----------------------------------------------------------------+
    | Entry point                                                     |

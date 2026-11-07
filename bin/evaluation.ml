@@ -58,9 +58,7 @@ let ctrl_c t =
       | `No, Some id -> send_interrupt t id; `Interrupting
 
 (* Die the way an unhandled SIGINT would. *)
-let quit () =
-  Sys.set_signal Sys.sigint Sys.Signal_default;
-  Unix.kill (Unix.getpid ()) Sys.sigint
+let quit () = Terminal.die_of Sys.sigint
 
 let press_ctrl_c t =
   match ctrl_c t with
